@@ -75,6 +75,10 @@ def infer_motion_phases(
     approach_end = max(0, hold_start - 1)
     hold_end = max(hold_start, release_start - 1)
     release_end = max(release_start, settle_start - 1)
+    if not (
+        approach_end < hold_start <= hold_end < release_start <= release_end < settle_start
+    ):
+        raise ValueError("trajectory cannot form four non-empty, non-overlapping phases")
 
     return (
         PhaseInterval(

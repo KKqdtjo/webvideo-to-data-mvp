@@ -35,6 +35,23 @@ def test_infers_motion_onset_and_post_motion_release() -> None:
     release = phases[2]
     assert hold.start_frame == pytest.approx(10, abs=1)
     assert release.start_frame == pytest.approx(30, abs=2)
+    assert all(
+        earlier.end_frame < later.start_frame
+        for earlier, later in zip(phases, phases[1:])
+    )
     assert phases[0].evidence == ("object_still",)
     assert phases[1].evidence == ("object_motion",)
     assert phases[3].evidence == ("object_settled",)
+
+
+def test_rejects_late_motion_without_room_for_four_non_overlapping_phases() -> None:
+    """Clamping release before hold must not fabricate overlapping intervals."""
+
+    trajectory = Trajectory2D(
+        timestamps_s=np.arange(6, dtype=float),
+        centers_px=np.column_stack(([0.0, 0.0, 0.0, 0.0, 0.0, 100.0], np.zeros(6))),
+        confidence=np.ones(6),
+    )
+
+    with pytest.raises(ValueError, match="four non-empty, non-overlapping phases"):
+        infer_motion_phases(trajectory, fps=1.0)
