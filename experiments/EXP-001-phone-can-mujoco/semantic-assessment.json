@@ -1,0 +1,22 @@
+{
+  "assessment_type": "manual_visual_qa",
+  "pixel_level_annotation": false,
+  "assessment_scope": "qualitative_review_of_tracking_overlay_and_side_by_side_media",
+  "source_sha256": "55e98463b8e270f4e7d87bda5d0ee73329880a96cf753fc2c78e1849f1c4ab17",
+  "artifacts_reviewed": [
+    "artifacts/EXP-001/B0/tracking_overlay.mp4",
+    "artifacts/EXP-001/B0/side_by_side.mp4",
+    "artifacts/EXP-001/B1/tracking_overlay.mp4",
+    "artifacts/EXP-001/B1/side_by_side.mp4"
+  ],
+  "finding": "LK points drift from the can onto the hand after placement",
+  "lk_point_availability_ratio": 1.0,
+  "lk_ratio_interpretation": "nonzero point confidence and forward-backward availability only; not semantic tracking accuracy",
+  "semantic_track_reliable": false,
+  "b1_endpoint_semantically_reliable": false,
+  "b1_path_semantically_reliable": false,
+  "can_center_checkpoint_error_px": {
+    "status": "not_measured",
+    "reason": "no_versioned_pixel_level_can_center_ground_truth"
+  }
+}

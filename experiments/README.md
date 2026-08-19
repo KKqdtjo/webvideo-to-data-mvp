@@ -26,7 +26,7 @@ artifacts/
 
 | 实验 | 状态 | 目的 |
 | --- | --- | --- |
-| EXP-000 | complete | 本地素材与远端环境只读盘点 |
-| EXP-001 | designed | 手机罐体视频到 Panda/MuJoCo 抓放 |
+| EXP-000 | completed | 本地素材与远端环境只读盘点 |
+| EXP-001 | completed | 手机罐体视频到 primitive 7-DoF Panda-like/MuJoCo 诊断回放；B0/B1 rejected，B2–B4 not_run |
 
-`designed` 表示设计已写但代码和正式运行尚未开始。
+Runner terminal status 统一为 `completed`、`not_run`、`rejected`、`failed`；实验汇总的 `completed` 只表示记录已完成，不表示变体成功或可导出 action。

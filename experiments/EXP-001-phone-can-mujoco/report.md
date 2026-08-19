@@ -2,7 +2,7 @@
 
 ## 结论
 
-真实视频的读取、LK 跟踪、阶段推断、B0/B1 参考轨迹、MuJoCo 回放和可视化链路均实际运行。实验没有产生任何可用 robot action：B0 的真实 `physics_grasp` 因 reachability 仅 0.0235655737704918、没有双指接触、lift=0 而拒绝；B1 是对象位姿覆盖的 `kinematic_replay`，只作为 canonical 2D-to-scene 诊断回放，明确标记为拒绝且 `placed_successfully=false`。B2–B4 未实现公制深度，独立记录为 `not_run`，原因均为 `metric_depth_not_available`。
+真实视频的读取、LK 跟踪、阶段推断、B0/B1 参考轨迹、MuJoCo 回放和可视化链路均实际运行。实验没有产生任何可用 robot action：B0 的真实 `physics_grasp` 因 reachability 仅 0.0235655737704918、没有双指接触、lift=0 而拒绝；B1 是对象位姿覆盖的 `kinematic_replay`，只作为 canonical 2D-to-scene 诊断回放，明确标记为拒绝且 `placed_successfully=false`。B2–B4 未实现公制深度，独立记录为 `not_run`，原因均为 `metric_depth_not_available`。当前硬编码几何的 primitive 7-DoF Panda-like diagnostic model 不是官方 Franka Panda，且未实现完整 collision validation；所有变体均记录 `action_export_eligible=false` / `collision_validation_not_implemented`。
 
 ## 输入与锁定配置
 
@@ -39,17 +39,17 @@ ROI 在任何结果读取前已固定，本实验没有据结果调参。
 
 | 变体 | 状态 / 模式 | runtime | 实测结果 |
 | --- | --- | ---: | --- |
-| B0 | rejected / physics_grasp | 3.756149 s | reachability 0.0235656；双指接触 0 帧；lift 0 m；target error 0.197230 m；无最终支撑接触；not placed；无 action 导出 |
-| B1 | rejected / kinematic_replay | 10.294673 s | canonical 2D-to-scene diagnostic；reachability 0.0969086；位姿覆盖产生的 height gain 0.185 m 不算物理 lift；target error 0.059916 m；not placed；无 action 导出 |
-| B2 | not_run | 0.019968 s | `metric_depth_not_available` |
-| B3 | not_run | 0.019399 s | `metric_depth_not_available` |
-| B4 | not_run | 0.022026 s | `metric_depth_not_available` |
+| B0 | rejected / physics_grasp | 6.886575 s | reachability 0.0235656；双指接触 0 帧；lift 0 m；target error 0.197230 m；无最终支撑接触；not placed；collision validation 未实现；无 action 导出 |
+| B1 | rejected / kinematic_replay | 10.316316 s | canonical 2D-to-scene diagnostic；reachability 0.0969086；位姿覆盖产生的 height gain 0.185 m 不算物理 lift；target error 0.059916 m；语义 endpoint/path 不可靠；not placed；无 action 导出 |
+| B2 | not_run | 0.216154 s | `metric_depth_not_available`；未复制 B1 指标 |
+| B3 | not_run | 0.219323 s | `metric_depth_not_available`；未复制 B1 指标 |
+| B4 | not_run | 0.194170 s | `metric_depth_not_available`；未复制 B1 指标 |
 
 B1 的 9761 个 `grasp_contact` 仿真帧来自 kinematic object pose override 下的几何接触诊断，不是合格物理抓取证据；`maximum_lift_m` 仍为 0，且成功判定被 simulation mode gate 否决。
 
 ## 跟踪与阶段
 
-valid track ratio 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（confidence 0.0156961）、hold 0.067–5.200 s（1.0）、release 5.233–5.500 s（0.0）、settle 5.533–6.967 s（0.0）。B0/B1 metrics 均明确记录 `perception_status=degraded` 和两个 `zero_confidence_phase` warnings；没有人工把它们改成更好看的时间段。
+`lk_point_availability_ratio` 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（confidence 0.0156961）、hold 0.067–5.200 s（1.0）、release 5.233–5.500 s（0.0）、settle 5.533–6.967 s（0.0）。这个比例只表示 LK 点存在非零 confidence/forward-backward availability，不是 semantic accuracy。人工视觉 QA 明确观察到放置后 LK 点从罐体漂到手上，因此 B1 endpoint/path 均不可靠；本轮没有像素级罐体中心 ground truth，can-center checkpoint error 为 `not_measured`。B0/B1 metrics 均明确记录 `perception_status=degraded` 和两个 `zero_confidence_phase` warnings；没有人工把它们改成更好看的时间段。机器可读视觉 QA 见 `semantic-assessment.json`。
 
 ## 可视化与 ffprobe
 
@@ -113,3 +113,15 @@ round 3 的 `_mark_canonical_publication_failure` 接收并重新验证 runner-o
 failure reporting 现在先把 canonical 原子移动到唯一 `.failure-working-<uuid>` sibling，再对移动后目录重新核对原 expected identity/content。若移动的是外部 replacement，候选只会在 canonical 仍空时原样恢复；否则保留在唯一 working 位置并停止，不 unlink 或覆盖其中任何文件。只有移动后仍精确属于 runner 的目录才会在 working pathname 下移除 action、写 failed metrics/rejection/manifest；最终仅在 canonical 未被占据时移回。若 canonical 已被外部占据，个人目录保持原样，runner-owned failed working 被保留且不含 action。任何这些分支都不递归删除目录。
 
 本轮仍未改变真实数据链路或 artifact schema，因此未重跑 B0–B4。当前 validator/hash audit 仍确认 B0/B1 rejected 且无 action，B2–B4 为 `metric_depth_not_available`，无 staging/backup/failure-working 残留；六个 MP4 duration 均 >0。最终 experiment regression 34 passed，完整 suite 70 passed in 36.83 s，compileall exit 0。
+
+## Final review fix：语义、碰撞门禁、provenance 与状态契约
+
+本轮按 TDD 增加并先运行 RED，覆盖：旧 `valid_track_ratio` 命名、缺少 generator/config/model/runtime/ffprobe provenance、一个 otherwise-passing physics verdict 错误导出 action、未知或缺少 reason 的 terminal status 被 trusted validator 接受，以及 completed run 缺少 collision validation。GREEN 后 runner 统一使用 `completed|not_run|rejected|failed` terminal vocabulary；感知降级另写 `perception_status=degraded`。manifest 升级到 format v3，并把 terminal status/reason/action absence 约束纳入 trusted-run 验证。
+
+当前 primitive XML 的 arm/hand collisions 与 self/table/box/penetration validation 不完整。因此 runner 硬性设置 `collision_validation=not_implemented`、`action_export_eligible=false`、`action_export_reason=collision_validation_not_implemented`；即使构造 otherwise-passing physics metrics 也不能导出 `actions.npz`。B0 的 primary rejection 仍如实保留 `physics_validation_failed`，碰撞门禁作为独立机器字段记录。
+
+生成器先以 commit `74e80827294ec156fb210377e2ef33ba74ec6e0d` 提交并确认 clean，随后从真实源视频重跑 B0–B4。每个 `provenance.json` 均记录该 commit、`git_dirty=false`、解析后的配置及 SHA-256、source/model SHA-256、Python/依赖/MuJoCo/OpenCV 版本，以及 source/generated media 的 ffprobe stream facts。最终 runtime 为 B0 6.8865752 s、B1 10.3163155 s、B2 0.2161542 s、B3 0.2193229 s、B4 0.1941702 s。
+
+发布审计确认：B0/B1 manifest format v3，状态均 rejected 且无 action；B2–B4 分别为 `not_run/metric_depth_not_available`；五个目录合计 `actions.npz` 为 0。六个 MP4 均由 ffprobe 验证可解码且 duration>0：B0 replay/side-by-side/overlay 为 3.9/7.0/7.0 s，B1 为 24.0/7.0/7.0 s。
+
+视觉 QA 结论单独版本化到 `semantic-assessment.json`：这是人工目视结论，不是像素级标注。放置后 LK 点从罐体漂到手上；`lk_point_availability_ratio=1.0` 仅表示非零 point confidence/forward-backward availability，不表示 semantic accuracy。B1 endpoint/path 均不可靠；由于没有像素级 can-center ground truth，checkpoint error 明确为 `not_measured`。

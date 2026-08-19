@@ -1,8 +1,10 @@
 # WebVideo to Data MVP 技术设计
 
 日期：2026-08-19  
-状态：待团队审阅  
-首轮任务：从手机拍摄的饮料罐抓放视频生成 Franka Panda/MuJoCo 可执行的仿真伪数据。
+状态：已审阅的原始设计；下列“应满足”是拟议验收目标，不是实际完成声明。
+首轮任务（原设计）：从手机拍摄的饮料罐抓放视频生成 Panda/MuJoCo 仿真伪数据。
+
+实现注记（2026-08-19）：EXP-001 实际使用硬编码几何的 primitive 7-DoF Panda-like diagnostic model，不是官方 Franka Panda。没有执行像素级/双标注者 annotation、实物几何测量、metric-depth B2–B4 或 20 次扰动；arm/hand collision geometry 与 self/table/box/penetration validation 也未完整实现。因此所有 action export 均被 `collision_validation_not_implemented` 硬性禁用。实际结果以 `experiments/EXP-001-phone-can-mujoco/` 为准。
 
 ## 1. 目标与验收范围
 
@@ -16,7 +18,7 @@ MVP 验证一条完整但窄的链路：
   -> 通过验证的仿真 episode 或明确的拒绝原因
 ```
 
-输入是 `video/手机录制.mp4`。视频中一只手拿起圆柱形饮料罐，将其放到纸盒顶面。目标 embodiment 是 Franka Panda 二指夹爪。
+输入是 `video/手机录制.mp4`。视频中一只手拿起圆柱形饮料罐，将其放到纸盒顶面。原设计目标 embodiment 是 Franka Panda 二指夹爪；本轮实现仅为 primitive 7-DoF Panda-like diagnostic model。
 
 MVP 完成时应满足：
 
@@ -271,15 +273,18 @@ replay.mp4
 
 ## 7. 误差处理
 
-每个阶段返回结构化状态：
+当前 runner 的 terminal status 采用严格、互斥的词汇：
 
 ```text
-success | degraded | rejected | failed
+completed | not_run | rejected | failed
 ```
 
-- `degraded`：仍可继续，但结果包含低置信区间；
+- `completed`：该 run 完成，且仅在全部 action gate 通过时才允许 action；
+- `not_run`：前置能力缺失而未执行，必须给出原因；
 - `rejected`：输入不满足视频或几何条件，属于预期数据结果；
 - `failed`：代码、依赖或运行环境错误。
+
+感知质量下降使用独立的 `perception_status=degraded`，不作为 terminal status。所有非 `completed` 状态不得包含 `actions.npz`；当前 collision validation 未实现，所以实际 EXP-001 没有任何 eligible action。
 
 错误记录包含阶段、稳定错误码、人类可读说明、输入 artifact、配置和异常摘要。日志不包含 API key、Authorization header、私有下载 URL 或原视频像素内容的无控制转储。
 

@@ -1,6 +1,12 @@
 {
   "experiment_id": "EXP-001-phone-can-mujoco",
-  "status": "completed_with_rejections",
+  "status": "completed",
+  "outcome": "no_action_all_variants_rejected_or_not_run",
+  "generator": {
+    "git_commit": "74e80827294ec156fb210377e2ef33ba74ec6e0d",
+    "git_dirty": false,
+    "artifact_manifest_format_version": 3
+  },
   "source": {
     "path": "video/手机录制.mp4",
     "sha256": "55e98463b8e270f4e7d87bda5d0ee73329880a96cf753fc2c78e1849f1c4ab17",
@@ -8,9 +14,12 @@
     "height": 960,
     "fps": 30.0,
     "frame_count": 210,
-    "duration_s": 7.019083
+    "duration_s": 7.019083,
+    "codec_name": "hevc"
   },
   "locked_configuration": {
+    "config_sha256": "ce5a26aa251bb13251e42fb27528d45050ad9e1c62e8d0a50af043e50969a9d8",
+    "model_sha256": "7e1f3094699866255227661df69e7ca7b055de7e636aa45c9de3b6d248763f20",
     "roi_xywh": [374, 423, 104, 155],
     "forward_backward_threshold_px": 1.5,
     "minimum_live_points": 8,
@@ -20,8 +29,17 @@
     "b0_goal_m": [-0.05, 0.55, 0.13],
     "random_seed": 19
   },
+  "model": {
+    "description": "primitive_7dof_panda_like_diagnostic",
+    "collision_validation": "not_implemented",
+    "action_export_eligible": false,
+    "action_export_reason": "collision_validation_not_implemented"
+  },
   "tracking": {
-    "valid_track_ratio": 1.0,
+    "lk_point_availability_ratio": 1.0,
+    "metric_scope": "point_availability_not_semantic_accuracy",
+    "semantic_accuracy_status": "not_measured",
+    "semantic_assessment": "semantic-assessment.json",
     "phase_count": 4,
     "phases": [
       {"label": "approach", "start_frame": 0, "end_frame": 1, "start_s": 0.0, "end_s": 0.03333333333333333, "confidence": 0.015696066218308546},
@@ -34,7 +52,7 @@
     "B0": {
       "status": "rejected",
       "reason": "physics_validation_failed",
-      "runtime_s": 7.105383200003416,
+      "runtime_s": 6.886575199998333,
       "simulation_mode": "physics_grasp",
       "reachability_ratio": 0.0235655737704918,
       "grasp_contact_frames": 0,
@@ -49,12 +67,15 @@
       "perception_status": "degraded",
       "perception_warnings": ["zero_confidence_phase:release", "zero_confidence_phase:settle"],
       "placed_successfully": false,
+      "collision_validation": "not_implemented",
+      "action_export_eligible": false,
+      "action_export_reason": "collision_validation_not_implemented",
       "action_exported": false
     },
     "B1": {
       "status": "rejected",
       "reason": "kinematic_replay_not_action",
-      "runtime_s": 12.879757799993968,
+      "runtime_s": 10.316315500007477,
       "simulation_mode": "kinematic_replay",
       "reachability_ratio": 0.0969085909507541,
       "grasp_contact_frames": 9761,
@@ -69,11 +90,26 @@
       "perception_status": "degraded",
       "perception_warnings": ["zero_confidence_phase:release", "zero_confidence_phase:settle"],
       "placed_successfully": false,
+      "collision_validation": "not_implemented",
+      "action_export_eligible": false,
+      "action_export_reason": "collision_validation_not_implemented",
       "action_exported": false
     },
-    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.033506399995530955},
-    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.056003800011239946},
-    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.045648900006199256}
+    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.2161542000103509, "action_export_eligible": false, "action_exported": false},
+    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.21932289999676868, "action_export_eligible": false, "action_exported": false},
+    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.19417020000400953, "action_export_eligible": false, "action_exported": false}
+  },
+  "media_contract": {
+    "B0": {
+      "tracking_overlay.mp4": {"codec_name": "mpeg4", "width": 540, "height": 960, "fps": 30.0, "frame_count": 210, "duration_s": 7.0},
+      "mujoco_replay.mp4": {"codec_name": "mpeg4", "width": 320, "height": 240, "fps": 10.0, "frame_count": 39, "duration_s": 3.9},
+      "side_by_side.mp4": {"codec_name": "mpeg4", "width": 960, "height": 240, "fps": 30.0, "frame_count": 210, "duration_s": 7.0}
+    },
+    "B1": {
+      "tracking_overlay.mp4": {"codec_name": "mpeg4", "width": 540, "height": 960, "fps": 30.0, "frame_count": 210, "duration_s": 7.0},
+      "mujoco_replay.mp4": {"codec_name": "mpeg4", "width": 320, "height": 240, "fps": 10.0, "frame_count": 240, "duration_s": 24.0},
+      "side_by_side.mp4": {"codec_name": "mpeg4", "width": 960, "height": 240, "fps": 30.0, "frame_count": 210, "duration_s": 7.0}
+    }
   },
   "artifact_root": "artifacts/EXP-001",
   "binary_artifacts_ignored": true

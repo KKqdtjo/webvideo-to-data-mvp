@@ -2,7 +2,7 @@
 
 把人类操作视频转换为可检查、可回放的机器人伪数据。
 
-项目当前处于可行性验证阶段。第一版只处理清晰、短时、单物体刚体操作，目标是得到经过 MuJoCo 验证的 Franka Panda 参考轨迹。它不会把未经仿真检查的视觉估计直接标成真实机器人 action。
+项目当前处于可行性验证阶段。第一版只处理清晰、短时、单物体刚体操作，并用 primitive 7-DoF Panda-like model 做 MuJoCo 诊断回放。当前模型不是官方 Franka Panda，且尚未实现完整碰撞验证，因此不会产生 auditable physics-action output。
 
 ## 项目要回答的问题
 
@@ -20,7 +20,9 @@
 
 ### EXP-001 实测状态
 
-已用锁定 ROI `[374,423,104,155]` 和真实 `video/手机录制.mp4` 完成端到端运行。B0 的 `physics_grasp` reachability 为 0.0235656，无双指接触、lift=0、未放置；B1 仅为 `kinematic_replay` 诊断，也未放置。两者均写 rejection 且不导出 `actions.npz`。B2–B4 因 `metric_depth_not_available` 记录为 `not_run`，没有复制 B1 指标。
+已用锁定 ROI `[374,423,104,155]` 和真实 `video/手机录制.mp4` 完成端到端运行。B0 的 `physics_grasp` reachability 为 0.0235656，无双指接触、lift=0、未放置；B1 仅为 `kinematic_replay` 诊断，也未放置。两者均写 rejection 且不导出 `actions.npz`。B2–B4 因 `metric_depth_not_available` 记录为 `not_run`，没有复制 B1 指标。另有一条独立门禁：primitive 模型尚无完整 collision validation，所有变体均为 `action_export_eligible=false`。
+
+LK 的 `lk_point_availability_ratio=1.0` 仅表示点 confidence/forward-backward availability，不是语义准确率。人工视觉 QA 观察到放置后点从罐体漂到手上；因此 B1 的 endpoint/path 不可靠，罐体中心 checkpoint error 未测量。见 [`semantic-assessment.json`](experiments/EXP-001-phone-can-mujoco/semantic-assessment.json)。
 
 完整实测报告与机器指标见 [`experiments/EXP-001-phone-can-mujoco/report.md`](experiments/EXP-001-phone-can-mujoco/report.md) 和 [`metrics.json`](experiments/EXP-001-phone-can-mujoco/metrics.json)。可再生成的媒体位于 ignored `artifacts/EXP-001/`。
 
@@ -41,13 +43,13 @@
 | 项目 | 选择 |
 | --- | --- |
 | 仿真器 | MuJoCo |
-| 机器人 | Franka Emika Panda |
-| 末端执行器 | Panda 二指夹爪 |
+| 机器人 | primitive 7-DoF Panda-like diagnostic model（非官方 Franka Panda） |
+| 末端执行器 | primitive 二指夹爪 |
 | 场景 | 桌面、圆柱体饮料罐、长方体纸盒 |
 | 控制方式 | 首轮使用末端位姿参考 + IK；后续可加入 operational-space controller |
 | 任务成功 | 罐体被抓起，并稳定落在纸盒顶面指定区域 |
 
-MuJoCo 适合当前环境：安装轻、CPU 可运行、接触和碰撞可重复，也不要求 Omniverse。NVIDIA V2D/CHORD 仍是中期基线，但需要兼容的 NVIDIA GPU、Docker、Isaac Lab、MANO 和外部数据集。
+MuJoCo 适合当前环境：安装轻、CPU 可运行，也不要求 Omniverse。但当前 primitive XML 禁用了部分 arm/hand collision geometry，尚不能提供完整的 self/table/box/penetration validation。NVIDIA V2D/CHORD 仍是中期基线，但需要兼容的 NVIDIA GPU、Docker、Isaac Lab、MANO 和外部数据集。
 
 ## 数据流水线
 
@@ -59,7 +61,7 @@ raw video
   -> depth, camera motion and scale estimate
   -> object trajectory in a canonical scene frame
   -> robot end-effector and gripper reference
-  -> IK, collision and reachability checks
+  -> IK and reachability diagnostics (collision validation pending)
   -> MuJoCo replay
   -> sim-validated episode or explicit rejection
 ```
@@ -76,7 +78,7 @@ raw video
 approach -> contact onset -> grasp/hold -> transport -> release -> settle
 ```
 
-自动估计结果与人工标注对照。contact 字段记录区间、参与对象、遮挡和置信度，而不是单个真假值。
+原设计提出将自动估计与人工标注对照；EXP-001 尚未制作 contact ground truth 或像素级物体标注。当前 contact 字段来自自动阶段推断，并如实保留低置信 release/settle warning。
 
 ### 3. 二维运动
 
@@ -96,7 +98,7 @@ approach -> contact onset -> grasp/hold -> transport -> release -> settle
 
 - 相机内参来自视频元数据、标定或模型估计；
 - 相对深度来自 MoGe 系列或同类模型；
-- 公制尺度由已知罐体尺寸、桌面几何或人工测量给出；
+- 公制尺度在后续设计中应由已知罐体尺寸、桌面几何或人工测量给出；EXP-001 未执行这些测量；
 - 相机运动需要和物体运动分离；
 - 严重遮挡阶段使用动力学平滑，但不伪造高置信度观测。
 
@@ -117,7 +119,7 @@ pre-grasp
   -> retreat
 ```
 
-机器人不复制人手腕的每个摆动。末端参考主要由罐体轨迹、抓取轴和接触阶段生成，再经过工作空间、IK、关节速度和碰撞检查。
+机器人不复制人手腕的每个摆动。末端参考主要由罐体轨迹、抓取轴和接触阶段生成。EXP-001 实际执行工作空间/IK 诊断，但碰撞验证未实现，所以 reference 不能作为 action 导出。
 
 ### 6. 仿真回放
 
@@ -125,8 +127,8 @@ pre-grasp
 
 | 实验 | 输入 | 用途 |
 | --- | --- | --- |
-| B0 | 手工起点、终点和接触阶段 | 验证仿真、IK 和抓放逻辑 |
-| B1 | 2D point tracks + 固定深度 | 测试仅二维运动能否提供可用方向和时序 |
+| B0 | 固定 canonical 起点/终点 + 合成 reference phases | 诊断仿真、IK 和抓放逻辑 |
+| B1 | LK point tracks + canonical 2D-to-scene replay | 诊断二维运动方向和时序；本次语义漂移使 endpoint/path 不可靠 |
 | B2 | point tracks + 单目深度/尺度 | 测试三维恢复误差 |
 | B3 | B2 + 自动 contact phases | 测试完整视频转换链 |
 | B4 | B3 + 轨迹平滑和物理修正 | 衡量约束优化带来的改进 |
@@ -137,7 +139,7 @@ pre-grasp
 
 - 物体 mask 的时序稳定性；
 - 有效点轨迹比例和中位跟踪长度；
-- contact onset/release 相对人工标注的时间误差；
+- contact onset/release 相对人工标注的时间误差（EXP-001 未测）；
 - 遮挡区间与低置信区间的覆盖率；
 - 三维轨迹的重投影误差、平滑度和尺度一致性。
 
@@ -146,7 +148,7 @@ pre-grasp
 - IK 可解帧比例；
 - 末端位置/姿态跟踪误差；
 - 关节位置、速度和加速度越界次数；
-- 自碰撞、环境碰撞和预抓取穿透次数。
+- 自碰撞、环境碰撞和预抓取穿透次数（EXP-001 未实现）；
 
 ### 仿真层
 
@@ -158,7 +160,7 @@ pre-grasp
 
 所有成功率都要注明试验次数和随机化范围。单次成功只能证明流水线能跑通，不能证明方法稳定。
 
-## 成功标准
+## 原设计成功标准（尚未完成）
 
 首轮实验满足以下条件才算通过：
 
@@ -169,7 +171,7 @@ pre-grasp
 5. 每次失败都能归类为感知、尺度、映射、控制或物理参数问题；
 6. 所有结果都能由锁定配置和一条命令重现。
 
-这些阈值是工程验收线，不是论文 SOTA 指标。若 B0 都无法稳定成功，应先修仿真和控制器；若 B0 成功而 B2/B3 失败，再处理视频重建。
+这些是拟议工程验收线，不是已经通过的结果。EXP-001 没有人工 contact ground truth、metric depth、20 次扰动或 collision validation；B0 也未成功。当前应先修仿真、控制器与碰撞模型，再重新评估视频重建。
 
 ## 计划中的目录
 
@@ -192,7 +194,7 @@ Webtodata/
     └── EXP-001-phone-can-mujoco/
 ```
 
-代码与配置将在技术设计审阅后创建。
+代码、配置和 EXP-001 诊断结果已经创建；上表仍用于说明仓库结构。
 
 ## 当前环境结论
 

@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert `video/手机录制.mp4` into an auditable 2D motion/contact record and a MuJoCo Panda pick-and-place replay with metrics and visualizations.
+**Goal (original plan):** Convert `video/手机录制.mp4` into an auditable 2D motion/contact record and a MuJoCo Panda pick-and-place replay with metrics and visualizations.
+
+**Actual MVP note (2026-08-19):** The implementation uses a primitive 7-DoF Panda-like diagnostic model, not the official Franka Panda. B0/B1 were rejected and B2-B4 were not run. Pixel/contact annotations, measured geometry, perturbation evaluation, and complete collision validation were not performed. Action export is hard-disabled with `collision_validation_not_implemented`; actual evidence is in `experiments/EXP-001-phone-can-mujoco/`.
 
 **Architecture:** A Python 3.11 package separates video/media contracts, lightweight OpenCV perception, object-centric retargeting, and MuJoCo execution. Every stage writes file artifacts; unvalidated trajectories are never exported as action-bearing episodes. B0 proves the simulator/control path, while B1-B4 progressively substitute video-derived motion, automatic phases, and constrained smoothing.
 
@@ -82,8 +84,8 @@ Implement frozen dataclasses. `PhaseInterval` validates frame order and confiden
 
 ```python
 class RunStatus(str, Enum):
-    SUCCESS = "success"
-    DEGRADED = "degraded"
+    COMPLETED = "completed"
+    NOT_RUN = "not_run"
     REJECTED = "rejected"
     FAILED = "failed"
 ```
@@ -225,7 +227,7 @@ Expected: FAIL because the scene and runner do not exist.
 
 - [ ] **Step 4: Implement the Panda scene and replay runner**
 
-Use MuJoCo's packaged Menagerie Panda model if available; otherwise vendor only the required Apache-2.0 Panda XML/assets with attribution. Add cylinder can, box target, table, camera, lights, position actuators, and finger actuators. Runner uses damped least-squares Jacobian IK per reference frame, applies joint targets, records states, contact count, can pose, target error, and rendered RGB frames. It must distinguish `kinematic_replay` from `physics_grasp` in `SimulationResult.mode`.
+Original implementation intent: use MuJoCo's packaged Menagerie Panda model if available, otherwise vendor an attributed model. Actual MVP: a hard-coded primitive 7-DoF Panda-like diagnostic XML was used; it is not the official Franka Panda and complete collision validation is not implemented. The runner distinguishes `kinematic_replay` from `physics_grasp` in `SimulationResult.mode`, but neither mode is action-export eligible in the current implementation.
 
 Run simulation and retargeting tests. Expected: pass.
 
@@ -263,7 +265,7 @@ git commit -m "feat: replay object-centric references in MuJoCo"
 
 - [ ] **Step 1: Write a failing orchestration test**
 
-Use a synthetic moving-object video and a small config. Assert `run_experiment(config_path, output_dir)` creates `provenance.json`, `trajectory_2d.npz`, `phases.json`, `metrics.json`, and `tracking_overlay.mp4`; assert metrics contain `source_sha256`, `valid_track_ratio`, `phase_count`, `variant`, `simulation_mode`, and `placed_successfully`.
+Use a synthetic moving-object video and a small config. Assert `run_experiment(config_path, output_dir)` creates `provenance.json`, `trajectory_2d.npz`, `phases.json`, `metrics.json`, and `tracking_overlay.mp4`; assert metrics contain `source_sha256`, `lk_point_availability_ratio`, `phase_count`, `variant`, `simulation_mode`, and `placed_successfully`. The LK metric is point confidence/forward-backward availability, not semantic tracking accuracy.
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/test_experiment.py -v`  
 Expected: FAIL because `experiment.py` does not exist.
