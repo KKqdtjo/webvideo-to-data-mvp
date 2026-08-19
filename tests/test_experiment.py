@@ -4,12 +4,15 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from dataclasses import replace
 
 import cv2
 import numpy as np
+import pytest
 import yaml
 
-from webvideo_to_data.experiment import run_experiment
+import webvideo_to_data.experiment as experiment_module
+from webvideo_to_data.experiment import _validate_mp4, run_experiment
 from webvideo_to_data.media import sha256_file
 
 
@@ -36,6 +39,8 @@ def _write_config(
     *,
     minimum_valid_ratio: float = 0.1,
     forward_backward_threshold_px: float = 1.5,
+    b0_start_m: tuple[float, float, float] = (0.12, 0.45, 0.04),
+    b0_goal_m: tuple[float, float, float] = (-0.05, 0.55, 0.13),
 ) -> None:
     path.write_text(
         yaml.safe_dump(
@@ -55,8 +60,8 @@ def _write_config(
                 "scene": {
                     "x_bounds_m": [-0.15, 0.15],
                     "y_bounds_m": [0.35, 0.65],
-                    "b0_start_m": [0.12, 0.45, 0.04],
-                    "b0_goal_m": [-0.05, 0.55, 0.13],
+                    "b0_start_m": list(b0_start_m),
+                    "b0_goal_m": list(b0_goal_m),
                 },
                 "simulation": {
                     "b0_mode": "physics_grasp",
@@ -77,6 +82,8 @@ def _synthetic_config(
     *,
     minimum_valid_ratio: float = 0.1,
     forward_backward_threshold_px: float = 1.5,
+    b0_start_m: tuple[float, float, float] = (0.12, 0.45, 0.04),
+    b0_goal_m: tuple[float, float, float] = (-0.05, 0.55, 0.13),
 ) -> Path:
     source = tmp_path / "moving.mp4"
     _write_moving_object_video(source)
@@ -86,6 +93,8 @@ def _synthetic_config(
         source,
         minimum_valid_ratio=minimum_valid_ratio,
         forward_backward_threshold_px=forward_backward_threshold_px,
+        b0_start_m=b0_start_m,
+        b0_goal_m=b0_goal_m,
     )
     return config_path
 
@@ -185,6 +194,24 @@ def test_failed_physics_validation_does_not_export_actions(tmp_path: Path) -> No
     assert not (output_dir / "actions.npz").exists()
 
 
+def test_b0_reference_uses_start_and_goal_from_yaml(tmp_path: Path) -> None:
+    """Catch parsed B0 scene coordinates being ignored by retargeting."""
+
+    start = (0.08, 0.42, 0.05)
+    goal = (-0.02, 0.52, 0.11)
+    config_path = _synthetic_config(
+        tmp_path, b0_start_m=start, b0_goal_m=goal
+    )
+    output_dir = tmp_path / "configured-B0"
+
+    run_experiment(config_path, output_dir, variant="B0", no_render=True)
+
+    with np.load(output_dir / "robot_reference.npz") as reference:
+        phases = reference["phase"].tolist()
+        np.testing.assert_allclose(reference["ee_positions"][phases.index("close")], start)
+        np.testing.assert_allclose(reference["ee_positions"][phases.index("open")], goal)
+
+
 def test_rejected_tracking_writes_diagnostics_but_not_actions(tmp_path: Path) -> None:
     """Catch a rejected perception run leaking unvalidated robot actions."""
 
@@ -241,3 +268,226 @@ def test_command_line_runner_accepts_variant_and_no_render(tmp_path: Path) -> No
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["status"] == "not_run"
     assert metrics["reason"] == "metric_depth_not_available"
+
+
+def test_b2_replaces_reused_b1_output_instead_of_leaving_stale_files(
+    tmp_path: Path,
+) -> None:
+    """Catch a B2 not-run publication retaining B1 media or stale actions."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "reused"
+    run_experiment(config_path, output_dir, variant="B1")
+    (output_dir / "actions.npz").write_bytes(b"stale action")
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "not_run"
+    assert {path.name for path in output_dir.iterdir()} == {
+        "metrics.json",
+        "provenance.json",
+        "run_manifest.json",
+    }
+
+
+def test_no_render_replaces_prior_rendered_output_without_stale_media(
+    tmp_path: Path,
+) -> None:
+    """Catch --no-render leaving media from a prior rendered run visible."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "no-render-reuse"
+    run_experiment(config_path, output_dir, variant="B1")
+
+    metrics = run_experiment(config_path, output_dir, variant="B1", no_render=True)
+
+    assert metrics["status"] == "rejected"
+    assert not list(output_dir.glob("*.mp4"))
+    assert not list(output_dir.glob("*.png"))
+    assert not list(output_dir.parent.glob(f".{output_dir.name}.staging-*"))
+
+
+def test_parse_failure_publishes_failed_metrics_and_rejection(tmp_path: Path) -> None:
+    """Catch malformed YAML escaping without an auditable failed run."""
+
+    config_path = tmp_path / "broken.yaml"
+    config_path.write_text("source: [", encoding="utf-8")
+    output_dir = tmp_path / "parse-failure"
+
+    metrics = run_experiment(config_path, output_dir, variant="B1")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "config"
+    assert json.loads((output_dir / "rejection.json").read_text(encoding="utf-8"))[
+        "stage"
+    ] == "config"
+    assert (output_dir / "metrics.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+
+
+def test_hash_failure_replaces_old_output_with_failed_run(tmp_path: Path) -> None:
+    """Catch source-integrity failure leaving a previous successful-looking run."""
+
+    config_path = _synthetic_config(tmp_path)
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    document["source"]["sha256"] = "0" * 64
+    config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    output_dir = tmp_path / "hash-failure"
+    output_dir.mkdir()
+    (output_dir / "actions.npz").write_bytes(b"stale action")
+    (output_dir / "metrics.json").write_text('{"status":"completed"}', encoding="utf-8")
+
+    metrics = run_experiment(config_path, output_dir, variant="B0")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "source_probe"
+    assert not (output_dir / "actions.npz").exists()
+    assert (output_dir / "rejection.json").is_file()
+
+
+def test_tracking_exception_publishes_stage_failure_without_partial_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch an unexpected stage exception bypassing failed-run publication."""
+
+    config_path = _synthetic_config(tmp_path)
+
+    def fail_tracking(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("synthetic tracking crash")
+
+    monkeypatch.setattr(experiment_module, "track_roi_lk", fail_tracking)
+    output_dir = tmp_path / "tracking-crash"
+
+    metrics = run_experiment(config_path, output_dir, variant="B1")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "tracking"
+    assert metrics["error_type"] == "RuntimeError"
+    assert not (output_dir / "actions.npz").exists()
+    assert (output_dir / "rejection.json").is_file()
+
+
+def test_output_replacement_refuses_unrecognized_directory(tmp_path: Path) -> None:
+    """Catch transaction cleanup recursively deleting an arbitrary user directory."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "not-a-generated-run"
+    output_dir.mkdir()
+    protected = output_dir / "keep.txt"
+    protected.write_text("user data", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unrecognized files"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+    assert protected.read_text(encoding="utf-8") == "user data"
+
+
+def test_output_replacement_refuses_directory_disguised_as_generated_file(
+    tmp_path: Path,
+) -> None:
+    """Catch recursive cleanup following an allowed filename into user data."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "disguised-directory"
+    protected_dir = output_dir / "metrics.json"
+    protected_dir.mkdir(parents=True)
+    protected = protected_dir / "keep.txt"
+    protected.write_text("user data", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unrecognized files"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+    assert protected.read_text(encoding="utf-8") == "user data"
+
+
+def test_relative_source_is_resolved_from_config_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a reproducible config depending on the caller's working directory."""
+
+    project = tmp_path / "project"
+    config_dir = project / "configs"
+    config_dir.mkdir(parents=True)
+    source = project / "moving.mp4"
+    _write_moving_object_video(source)
+    config_path = config_dir / "experiment.yaml"
+    _write_config(config_path, source)
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    document["source"]["path"] = "../moving.mp4"
+    config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    metrics = run_experiment(config_path, tmp_path / "relative-run", variant="B2")
+
+    assert metrics["status"] == "not_run"
+    provenance = json.loads(
+        (tmp_path / "relative-run" / "provenance.json").read_text(encoding="utf-8")
+    )
+    assert Path(provenance["source_path"]) == source.resolve()
+
+
+def test_mp4_validation_rejects_non_video_binary(tmp_path: Path) -> None:
+    """Catch a nonempty but undecodable file passing the media publication gate."""
+
+    invalid = tmp_path / "invalid.mp4"
+    invalid.write_bytes(b"not an mp4")
+
+    with pytest.raises(ValueError, match="ffprobe|decodable"):
+        _validate_mp4(invalid)
+
+
+def test_invalid_rendered_mp4_publishes_failure_without_partial_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a broken encoder artifact being published as a completed run."""
+
+    config_path = _synthetic_config(tmp_path)
+
+    def write_invalid(path: Path, frames: np.ndarray, fps: float) -> None:
+        path.write_bytes(b"broken replay")
+
+    monkeypatch.setattr(experiment_module, "_write_rgb_video", write_invalid)
+    output_dir = tmp_path / "invalid-media"
+
+    metrics = run_experiment(config_path, output_dir, variant="B1")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "visualization"
+    assert (output_dir / "rejection.json").is_file()
+    assert not list(output_dir.glob("*.mp4"))
+    assert not list(output_dir.glob("*.png"))
+    assert not (output_dir / "actions.npz").exists()
+
+
+def test_zero_confidence_contact_phases_are_recorded_as_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch unreliable release/settle inference being reported without a warning."""
+
+    config_path = _synthetic_config(tmp_path)
+    real_infer = experiment_module.infer_motion_phases
+
+    def infer_with_zero_confidence(trajectory: object, fps: float) -> tuple[object, ...]:
+        phases = real_infer(trajectory, fps)
+        return tuple(
+            replace(phase, confidence=0.0)
+            if phase.label in ("release", "settle")
+            else phase
+            for phase in phases
+        )
+
+    monkeypatch.setattr(
+        experiment_module, "infer_motion_phases", infer_with_zero_confidence
+    )
+
+    metrics = run_experiment(
+        config_path, tmp_path / "degraded-phases", variant="B1", no_render=True
+    )
+
+    assert metrics["perception_status"] == "degraded"
+    assert metrics["perception_warnings"] == [
+        "zero_confidence_phase:release",
+        "zero_confidence_phase:settle",
+    ]

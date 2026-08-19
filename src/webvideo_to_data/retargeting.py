@@ -122,6 +122,8 @@ def build_pick_place_reference(
     max_speed_m_s: float = 0.35,
     sample_period_s: float = 0.1,
     post_release_hold_s: float = 1.0,
+    b0_start_m: Sequence[float] = (0.12, 0.45, 0.04),
+    b0_goal_m: Sequence[float] = (-0.05, 0.55, 0.13),
 ) -> RobotReference:
     """Build a speed-limited, seven-phase object-centric pick/place reference."""
 
@@ -135,8 +137,14 @@ def build_pick_place_reference(
         raise ValueError("post_release_hold_s must be at least 1.0")
 
     if variant == "B0":
-        start_xy = np.array([0.12, 0.45])
-        goal_xy = np.array([-0.05, 0.55])
+        start = np.asarray(b0_start_m, dtype=float)
+        goal = np.asarray(b0_goal_m, dtype=float)
+        if start.shape != (3,) or goal.shape != (3,):
+            raise ValueError("B0 start and goal must each contain x, y, z")
+        if not np.isfinite(start).all() or not np.isfinite(goal).all():
+            raise ValueError("B0 start and goal must be finite")
+        start_xy = start[:2]
+        goal_xy = goal[:2]
         tracked_xy = np.linspace(start_xy, goal_xy, 5)
     else:
         first_interval = min(phases, key=lambda item: item.start_frame)
@@ -150,9 +158,9 @@ def build_pick_place_reference(
         tracked_xy = map_pixels_to_scene(
             trajectory.centers_px, image_size, x_bounds, y_bounds
         )
+        start = np.r_[start_xy, 0.04]
+        goal = np.r_[goal_xy, 0.13]
 
-    start = np.r_[start_xy, 0.04]
-    goal = np.r_[goal_xy, 0.13]
     lift_height = max(start[2], goal[2]) + 0.10
     approach = start + np.array([0.0, 0.0, 0.10])
     lifted = np.r_[start_xy, lift_height]

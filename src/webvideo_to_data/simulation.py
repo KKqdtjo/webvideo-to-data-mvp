@@ -204,6 +204,7 @@ def run_mujoco_replay(
     render_every: int = 20,
     render_size: tuple[int, int] = (320, 240),
     ik_damping: float = 0.05,
+    render: bool = True,
 ) -> SimulationResult:
     """Replay a reference with DLS Jacobian IK in a real headless MuJoCo model."""
 
@@ -284,7 +285,11 @@ def run_mujoco_replay(
     frames: list[NDArray[np.uint8]] = []
 
     render_width, render_height = render_size
-    renderer = mujoco.Renderer(model, height=render_height, width=render_width)
+    renderer = (
+        mujoco.Renderer(model, height=render_height, width=render_width)
+        if render
+        else None
+    )
     try:
         for step in range(requested_steps):
             reference_index = _reference_index(reference, float(data.time))
@@ -346,11 +351,12 @@ def run_mujoco_replay(
                 minimum_distance,
                 _minimum_hand_can_distance(model, data, can_geom_id),
             )
-            if (step + 1) % render_every == 0:
+            if renderer is not None and (step + 1) % render_every == 0:
                 renderer.update_scene(data, camera="overview")
                 frames.append(renderer.render().copy())
     finally:
-        renderer.close()
+        if renderer is not None:
+            renderer.close()
 
     invalid = not (
         np.isfinite(qpos_history).all()

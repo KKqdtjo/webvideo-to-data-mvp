@@ -1,6 +1,6 @@
 experiment_id: EXP-001-phone-can-mujoco
 source:
-  path: video/手机录制.mp4
+  path: ../video/手机录制.mp4
   sha256: 55E98463B8E270F4E7D87BDA5D0EE73329880A96CF753FC2C78E1849F1C4AB17
   fps: 30.0
   roi_xywh: [374, 423, 104, 155]

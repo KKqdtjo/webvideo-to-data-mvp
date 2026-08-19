@@ -25,7 +25,7 @@
 
 ## Artifact 索引
 
-可再生成的 binary 位于 ignored `artifacts/EXP-001/{B0,B1}/`：tracking overlay、2D trajectory plot、MuJoCo replay、side-by-side、contact sheet，以及 provenance、reference、simulation 和 rejection diagnostics。B2–B4 目录仅含 provenance/metrics。B0/B1 均无 `actions.npz`。
+可再生成的 binary 位于 ignored `artifacts/EXP-001/{B0,B1}/`：tracking overlay、2D trajectory plot、MuJoCo replay、side-by-side、contact sheet，以及 manifest、provenance、reference、simulation 和 rejection diagnostics。B2–B4 目录仅含 manifest/provenance/metrics。B0/B1 均无 `actions.npz`。
 
 ## 原设计交付
 

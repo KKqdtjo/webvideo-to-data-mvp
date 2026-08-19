@@ -405,3 +405,23 @@ def test_real_b0_physics_replay_reports_measured_controller_failure() -> None:
     assert not result.final_support_contact
     assert result.target_error_m > 0.10
     assert not result.placed_successfully
+
+
+def test_render_false_does_not_construct_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch --no-render still constructing an OpenGL renderer/context."""
+
+    def fail_renderer(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Renderer must not be constructed")
+
+    monkeypatch.setattr(mujoco, "Renderer", fail_renderer)
+
+    result = run_mujoco_replay(
+        _stationary_reference(),
+        mode="physics_grasp",
+        max_steps=2,
+        render=False,
+    )
+
+    assert result.rendered_rgb.shape == (0, 240, 320, 3)

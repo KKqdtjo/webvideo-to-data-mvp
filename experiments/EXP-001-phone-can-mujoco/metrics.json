@@ -34,7 +34,7 @@
     "B0": {
       "status": "rejected",
       "reason": "physics_validation_failed",
-      "runtime_s": 4.909151100000599,
+      "runtime_s": 3.7561493999965023,
       "simulation_mode": "physics_grasp",
       "reachability_ratio": 0.0235655737704918,
       "grasp_contact_frames": 0,
@@ -46,13 +46,15 @@
       "final_support_contact": false,
       "finishes_inside_box": false,
       "invalid_numerical_state": false,
+      "perception_status": "degraded",
+      "perception_warnings": ["zero_confidence_phase:release", "zero_confidence_phase:settle"],
       "placed_successfully": false,
       "action_exported": false
     },
     "B1": {
       "status": "rejected",
       "reason": "kinematic_replay_not_action",
-      "runtime_s": 9.63741779999691,
+      "runtime_s": 10.294673100012005,
       "simulation_mode": "kinematic_replay",
       "reachability_ratio": 0.0969085909507541,
       "grasp_contact_frames": 9761,
@@ -64,12 +66,14 @@
       "final_support_contact": false,
       "finishes_inside_box": false,
       "invalid_numerical_state": false,
+      "perception_status": "degraded",
+      "perception_warnings": ["zero_confidence_phase:release", "zero_confidence_phase:settle"],
       "placed_successfully": false,
       "action_exported": false
     },
-    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.021074799995403737},
-    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.018790699992678128},
-    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.01975510000193026}
+    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.019967899992479943},
+    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.019398799995542504},
+    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.022025900005246513}
   },
   "artifact_root": "artifacts/EXP-001",
   "binary_artifacts_ignored": true

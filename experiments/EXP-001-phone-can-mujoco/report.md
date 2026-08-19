@@ -39,17 +39,17 @@ ROI 在任何结果读取前已固定，本实验没有据结果调参。
 
 | 变体 | 状态 / 模式 | runtime | 实测结果 |
 | --- | --- | ---: | --- |
-| B0 | rejected / physics_grasp | 4.909151 s | reachability 0.0235656；双指接触 0 帧；lift 0 m；target error 0.197230 m；无最终支撑接触；not placed；无 action 导出 |
-| B1 | rejected / kinematic_replay | 9.637418 s | canonical 2D-to-scene diagnostic；reachability 0.0969086；位姿覆盖产生的 height gain 0.185 m 不算物理 lift；target error 0.059916 m；not placed；无 action 导出 |
-| B2 | not_run | 0.021075 s | `metric_depth_not_available` |
-| B3 | not_run | 0.018791 s | `metric_depth_not_available` |
-| B4 | not_run | 0.019755 s | `metric_depth_not_available` |
+| B0 | rejected / physics_grasp | 3.756149 s | reachability 0.0235656；双指接触 0 帧；lift 0 m；target error 0.197230 m；无最终支撑接触；not placed；无 action 导出 |
+| B1 | rejected / kinematic_replay | 10.294673 s | canonical 2D-to-scene diagnostic；reachability 0.0969086；位姿覆盖产生的 height gain 0.185 m 不算物理 lift；target error 0.059916 m；not placed；无 action 导出 |
+| B2 | not_run | 0.019968 s | `metric_depth_not_available` |
+| B3 | not_run | 0.019399 s | `metric_depth_not_available` |
+| B4 | not_run | 0.022026 s | `metric_depth_not_available` |
 
 B1 的 9761 个 `grasp_contact` 仿真帧来自 kinematic object pose override 下的几何接触诊断，不是合格物理抓取证据；`maximum_lift_m` 仍为 0，且成功判定被 simulation mode gate 否决。
 
 ## 跟踪与阶段
 
-valid track ratio 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（confidence 0.0156961）、hold 0.067–5.200 s（1.0）、release 5.233–5.500 s（0.0）、settle 5.533–6.967 s（0.0）。后两个阶段置信度为 0，是本次感知结果的明确弱点；没有人工把它们改成更好看的时间段。
+valid track ratio 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（confidence 0.0156961）、hold 0.067–5.200 s（1.0）、release 5.233–5.500 s（0.0）、settle 5.533–6.967 s（0.0）。B0/B1 metrics 均明确记录 `perception_status=degraded` 和两个 `zero_confidence_phase` warnings；没有人工把它们改成更好看的时间段。
 
 ## 可视化与 ffprobe
 
@@ -68,8 +68,8 @@ valid track ratio 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（c
 
 ## Artifact 清单
 
-- `artifacts/EXP-001/B0/` 与 `B1/`：`provenance.json`、`trajectory_2d.npz`、`phases.json`、`robot_reference.npz`、`simulation.npz`、`metrics.json`、`rejection.json` 及五个可视化文件。
-- `artifacts/EXP-001/B2/`、`B3/`、`B4/`：各自的 `provenance.json` 和 `metrics.json`。
+- `artifacts/EXP-001/B0/` 与 `B1/`：`run_manifest.json`、`provenance.json`、`trajectory_2d.npz`、`phases.json`、`robot_reference.npz`、`simulation.npz`、`metrics.json`、`rejection.json` 及五个可视化文件。
+- `artifacts/EXP-001/B2/`、`B3/`、`B4/`：各自独立的 `run_manifest.json`、`provenance.json` 和 `metrics.json`。
 - 没有任何 B0/B1 `actions.npz`；binary artifacts 和源视频均由 `.gitignore` 排除。
 - 版本化汇总：`experiments/EXP-001-phone-can-mujoco/metrics.json`。
 
@@ -81,3 +81,9 @@ valid track ratio 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（c
 - 主要 concern 是控制/IK：B0 reachability 远低于 0.95，无法验证抓放。
 - 感知 concern 是自动阶段边界：release/settle confidence 为 0，且长 hold 很可能混合了手、罐体和相机运动。
 - 公制深度尚不可用，因此不能评价 B2–B4 的尺度、三维重投影或物理约束收益。
+
+## Review fix round 1/5
+
+runner 已改为同级 fresh staging + validated directory swap。parse、SHA、tracking、simulation 或 visualization exception 都会发布可审计的 failed metrics/rejection；复用 output 不会保留旧 action/media。发布前每个 MP4 均通过 ffprobe duration 与首帧解码；`--no-render` 不创建 MuJoCo Renderer。B0 配置起终点已实际透传，相对 source 改为相对 config 目录解析。
+
+修复后真实 B0–B4 重跑的 runtime 为 3.7561494、10.2946731、0.0199679、0.0193988、0.0220259 秒。完整测试为 54 passed，compileall exit 0，六个 MP4 duration>0；B0/B1 无 action，B2–B4 各自只有 manifest/provenance/metrics。实验结论与失败口径不变。

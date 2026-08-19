@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import time
 from typing import Any, Literal
+from uuid import uuid4
 
 import cv2
 import matplotlib
@@ -26,6 +30,39 @@ from .visualization import render_tracking_overlay
 
 
 Variant = Literal["B0", "B1", "B2", "B3", "B4"]
+_GENERATED_RUN_FILES = {
+    "actions.npz",
+    "contact_sheet.png",
+    "metrics.json",
+    "mujoco_replay.mp4",
+    "phases.json",
+    "provenance.json",
+    "rejection.json",
+    "robot_reference.npz",
+    "run_manifest.json",
+    "side_by_side.mp4",
+    "simulation.npz",
+    "tracking_overlay.mp4",
+    "trajectory_2d.npz",
+    "trajectory_2d.png",
+}
+
+
+class _PipelineFailure(Exception):
+    def __init__(self, stage: str, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.stage = stage
+        self.cause = cause
+
+
+@contextmanager
+def _pipeline_stage(name: str) -> Any:
+    try:
+        yield
+    except _PipelineFailure:
+        raise
+    except Exception as error:
+        raise _PipelineFailure(name, error) from error
 
 
 @dataclass(frozen=True)
@@ -126,7 +163,7 @@ def _resolve_source(config_path: Path, configured_path: str) -> Path:
     source = Path(configured_path)
     if source.is_absolute():
         return source
-    return (Path.cwd() / source).resolve()
+    return (config_path.parent / source).resolve()
 
 
 def _write_rgb_video(path: Path, frames: np.ndarray, fps: float) -> None:
@@ -143,6 +180,38 @@ def _write_rgb_video(path: Path, frames: np.ndarray, fps: float) -> None:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     finally:
         writer.release()
+
+
+def _validate_mp4(path: Path) -> float:
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    try:
+        duration = float(completed.stdout.strip())
+    except ValueError as error:
+        raise ValueError(f"ffprobe returned no valid duration for {path}") from error
+    if completed.returncode != 0 or duration <= 0.0:
+        raise ValueError(f"ffprobe rejected {path}: {completed.stderr.strip()}")
+    capture = cv2.VideoCapture(str(path))
+    try:
+        ok, frame = capture.read()
+        if not capture.isOpened() or not ok or frame is None or frame.size == 0:
+            raise ValueError(f"MP4 is not decodable: {path}")
+    finally:
+        capture.release()
+    return duration
 
 
 def _render_trajectory_plot(trajectory: Any, phases: Any, output: Path) -> None:
@@ -285,51 +354,142 @@ def _rejected_metrics(
     }
 
 
-def run_experiment(
-    config_path: str | Path,
-    output_dir: str | Path,
-    *,
-    variant: Variant = "B1",
-    no_render: bool = False,
-) -> dict[str, Any]:
-    """Run one reproducible variant and return the same metrics written to disk."""
+def _validated_output_target(output_dir: str | Path) -> Path:
+    destination = Path(output_dir).resolve()
+    if destination == Path(destination.anchor) or destination == Path.cwd().resolve():
+        raise ValueError("output target is too broad for generated-run replacement")
+    if destination.exists():
+        if destination.is_symlink() or not destination.is_dir():
+            raise ValueError("output target must be a real directory")
+        unrecognized = {
+            child.name for child in destination.iterdir()
+            if (
+                child.name not in _GENERATED_RUN_FILES
+                or not child.is_file()
+                or child.is_symlink()
+            )
+        }
+        if unrecognized:
+            raise ValueError(
+                "output target contains unrecognized files: "
+                + ", ".join(sorted(unrecognized))
+            )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
 
-    if variant not in ("B0", "B1", "B2", "B3", "B4"):
-        raise ValueError("variant must be B0, B1, B2, B3, or B4")
-    config_file = Path(config_path).resolve()
-    config = load_experiment_config(config_file)
-    destination = Path(output_dir)
-    destination.mkdir(parents=True, exist_ok=True)
-    actions_path = destination / "actions.npz"
-    actions_path.unlink(missing_ok=True)
-    (destination / "rejection.json").unlink(missing_ok=True)
-    started = time.perf_counter()
-    np.random.seed(config.random_seed)
 
-    source = _resolve_source(config_file, config.source.path)
-    measured_sha256 = sha256_file(source)
-    if measured_sha256.lower() != config.source.sha256:
-        raise ValueError(
-            f"source SHA-256 mismatch: expected {config.source.sha256}, got {measured_sha256}"
-        )
-    metadata = probe_video(source)
-    if not np.isclose(metadata.fps, config.source.fps, atol=0.05):
-        raise ValueError(
-            f"source FPS mismatch: expected {config.source.fps}, got {metadata.fps}"
-        )
+def _publish_staging(staging: Path, destination: Path) -> None:
+    backup = destination.parent / f".{destination.name}.backup-{uuid4().hex}"
+    if backup.parent != destination.parent or not backup.name.startswith(
+        f".{destination.name}.backup-"
+    ):
+        raise ValueError("unsafe generated backup target")
+    if not destination.exists():
+        staging.replace(destination)
+        return
+    destination.replace(backup)
+    try:
+        staging.replace(destination)
+    except Exception:
+        backup.replace(destination)
+        raise
+    shutil.rmtree(backup)
 
+
+def _write_run_manifest(staging: Path, metrics: dict[str, Any]) -> None:
     _atomic_json(
-        destination / "provenance.json",
+        staging / "run_manifest.json",
         {
-            "experiment_id": config.experiment_id,
-            "config_path": str(config_file),
-            "source_path": str(source),
-            "source_sha256": measured_sha256,
-            "variant": variant,
-            "random_seed": config.random_seed,
-            "source_metadata": asdict(metadata),
+            "format_version": 1,
+            "variant": metrics["variant"],
+            "status": metrics["status"],
+            "files": sorted(path.name for path in staging.iterdir()),
         },
     )
+
+
+def _validate_required_run_files(
+    staging: Path, metrics: dict[str, Any], *, no_render: bool
+) -> None:
+    required = {"metrics.json"}
+    if metrics["status"] == "failed":
+        required.add("rejection.json")
+    else:
+        required.add("provenance.json")
+    if metrics["variant"] in ("B0", "B1") and metrics["status"] != "failed":
+        tracking_rejection = (
+            metrics["status"] == "rejected"
+            and metrics.get("rejection_stage") == "tracking"
+        )
+        required.add("trajectory_2d.npz")
+        if tracking_rejection:
+            required.add("rejection.json")
+            if not no_render:
+                required.add("tracking_overlay.mp4")
+        else:
+            required.update(
+                {"phases.json", "robot_reference.npz", "simulation.npz"}
+            )
+            if not no_render:
+                required.update(
+                    {
+                        "tracking_overlay.mp4",
+                        "trajectory_2d.png",
+                        "mujoco_replay.mp4",
+                        "side_by_side.mp4",
+                        "contact_sheet.png",
+                    }
+                )
+            if metrics["status"] == "rejected":
+                required.add("rejection.json")
+            if metrics["status"] == "completed":
+                required.add("actions.npz")
+    missing = sorted(name for name in required if not (staging / name).is_file())
+    if missing:
+        raise _PipelineFailure(
+            "publication", ValueError("missing required run files: " + ", ".join(missing))
+        )
+
+
+def _execute_run(
+    config_file: Path,
+    destination: Path,
+    *,
+    variant: Variant,
+    no_render: bool,
+    started: float,
+) -> dict[str, Any]:
+    with _pipeline_stage("config"):
+        config = load_experiment_config(config_file)
+        np.random.seed(config.random_seed)
+
+    with _pipeline_stage("source_probe"):
+        source = _resolve_source(config_file, config.source.path)
+        measured_sha256 = sha256_file(source)
+        if measured_sha256.lower() != config.source.sha256:
+            raise ValueError(
+                f"source SHA-256 mismatch: expected {config.source.sha256}, "
+                f"got {measured_sha256}"
+            )
+        metadata = probe_video(source)
+        if not np.isclose(metadata.fps, config.source.fps, atol=0.05):
+            raise ValueError(
+                f"source FPS mismatch: expected {config.source.fps}, got {metadata.fps}"
+            )
+
+    with _pipeline_stage("provenance"):
+        _atomic_json(
+            destination / "provenance.json",
+            {
+                "experiment_id": config.experiment_id,
+                "config_path": str(config_file),
+                "source_path": str(source),
+                "source_sha256": measured_sha256,
+                "variant": variant,
+                "random_seed": config.random_seed,
+                "source_metadata": asdict(metadata),
+            },
+        )
 
     if variant in ("B2", "B3", "B4"):
         metrics = {
@@ -339,41 +499,45 @@ def run_experiment(
             "source_sha256": measured_sha256,
             "runtime_s": time.perf_counter() - started,
         }
-        _atomic_json(destination / "metrics.json", metrics)
+        with _pipeline_stage("metrics"):
+            _atomic_json(destination / "metrics.json", metrics)
         return metrics
 
-    trajectory = track_roi_lk(
-        source,
-        config.source.roi_xywh,
-        forward_backward_threshold_px=(
-            config.tracking.forward_backward_threshold_px
-        ),
-        minimum_live_points=config.tracking.minimum_live_points,
-    )
-    np.savez(
-        destination / "trajectory_2d.npz",
-        timestamps_s=trajectory.timestamps_s,
-        centers_px=trajectory.centers_px,
-        confidence=trajectory.confidence,
-    )
-    valid_track_ratio = float(np.mean(trajectory.confidence > 0.0))
+    with _pipeline_stage("tracking"):
+        trajectory = track_roi_lk(
+            source,
+            config.source.roi_xywh,
+            forward_backward_threshold_px=config.tracking.forward_backward_threshold_px,
+            minimum_live_points=config.tracking.minimum_live_points,
+        )
+        np.savez(
+            destination / "trajectory_2d.npz",
+            timestamps_s=trajectory.timestamps_s,
+            centers_px=trajectory.centers_px,
+            confidence=trajectory.confidence,
+        )
+        valid_track_ratio = float(np.mean(trajectory.confidence > 0.0))
     if valid_track_ratio < config.tracking.minimum_valid_ratio:
         reason = "valid_track_ratio_below_minimum"
-        rejection = {
-            "stage": "tracking",
-            "reason": reason,
-            "measured_valid_track_ratio": valid_track_ratio,
-            "minimum_valid_track_ratio": config.tracking.minimum_valid_ratio,
-        }
-        _atomic_json(destination / "rejection.json", rejection)
+        _atomic_json(
+            destination / "rejection.json",
+            {
+                "stage": "tracking",
+                "reason": reason,
+                "measured_valid_track_ratio": valid_track_ratio,
+                "minimum_valid_track_ratio": config.tracking.minimum_valid_ratio,
+            },
+        )
         if not no_render:
-            render_tracking_overlay(
-                source,
-                trajectory,
-                (),
-                destination / "tracking_overlay.mp4",
-                roi_size=config.source.roi_xywh[2:],
-            )
+            with _pipeline_stage("visualization"):
+                render_tracking_overlay(
+                    source,
+                    trajectory,
+                    (),
+                    destination / "tracking_overlay.mp4",
+                    roi_size=config.source.roi_xywh[2:],
+                )
+                _validate_mp4(destination / "tracking_overlay.mp4")
         metrics = _rejected_metrics(
             variant=variant,
             source_sha256=measured_sha256,
@@ -384,83 +548,102 @@ def run_experiment(
         )
         _atomic_json(destination / "metrics.json", metrics)
         return metrics
-    phases = infer_motion_phases(trajectory, metadata.fps)
-    _atomic_json(
-        destination / "phases.json",
-        [{**asdict(phase), "evidence": list(phase.evidence)} for phase in phases],
-    )
+
+    with _pipeline_stage("phase_inference"):
+        phases = infer_motion_phases(trajectory, metadata.fps)
+        _atomic_json(
+            destination / "phases.json",
+            [{**asdict(phase), "evidence": list(phase.evidence)} for phase in phases],
+        )
     if not no_render:
-        render_tracking_overlay(
-            source,
+        with _pipeline_stage("visualization"):
+            render_tracking_overlay(
+                source,
+                trajectory,
+                phases,
+                destination / "tracking_overlay.mp4",
+                roi_size=config.source.roi_xywh[2:],
+            )
+            _validate_mp4(destination / "tracking_overlay.mp4")
+
+    with _pipeline_stage("retargeting"):
+        retargeting_variant = "B0" if variant == "B0" else "B1"
+        reference = build_pick_place_reference(
             trajectory,
             phases,
-            destination / "tracking_overlay.mp4",
-            roi_size=config.source.roi_xywh[2:],
+            retargeting_variant,
+            image_size=(metadata.width, metadata.height),
+            x_bounds=config.scene.x_bounds_m,
+            y_bounds=config.scene.y_bounds_m,
+            b0_start_m=config.scene.b0_start_m,
+            b0_goal_m=config.scene.b0_goal_m,
         )
+        reference_payload = {
+            "timestamps_s": reference.timestamps_s,
+            "ee_positions": reference.ee_positions,
+            "quaternion_wxyz": reference.quaternion_wxyz,
+            "gripper_width": reference.gripper_width,
+            "phase": np.asarray(reference.phase),
+        }
+        np.savez(destination / "robot_reference.npz", **reference_payload)
 
-    retargeting_variant = "B0" if variant == "B0" else "B1"
-    reference = build_pick_place_reference(
-        trajectory,
-        phases,
-        retargeting_variant,
-        image_size=(metadata.width, metadata.height),
-        x_bounds=config.scene.x_bounds_m,
-        y_bounds=config.scene.y_bounds_m,
-    )
-    reference_payload = {
-        "timestamps_s": reference.timestamps_s,
-        "ee_positions": reference.ee_positions,
-        "quaternion_wxyz": reference.quaternion_wxyz,
-        "gripper_width": reference.gripper_width,
-        "phase": np.asarray(reference.phase),
-    }
-    np.savez(
-        destination / "robot_reference.npz",
-        **reference_payload,
-    )
-    simulation_mode = (
-        config.simulation.b0_mode if variant == "B0" else config.simulation.b1_mode
-    )
-    simulation = run_mujoco_replay(
-        reference,
-        mode=simulation_mode,
-        render_every=config.simulation.render_every,
-        render_size=config.simulation.render_size,
-    )
-    np.savez(
-        destination / "simulation.npz",
-        qpos=simulation.qpos,
-        qvel=simulation.qvel,
-        can_pose=simulation.can_pose,
-        contact_count=simulation.contact_count,
-        grasp_contact=simulation.grasp_contact,
-        ik_position_error_m=simulation.ik_position_error_m,
-        ik_orientation_error_rad=simulation.ik_orientation_error_rad,
-        ik_converged=simulation.ik_converged,
-    )
+    with _pipeline_stage("simulation"):
+        simulation_mode = (
+            config.simulation.b0_mode
+            if variant == "B0"
+            else config.simulation.b1_mode
+        )
+        simulation = run_mujoco_replay(
+            reference,
+            mode=simulation_mode,
+            render_every=config.simulation.render_every,
+            render_size=config.simulation.render_size,
+            render=not no_render,
+        )
+        np.savez(
+            destination / "simulation.npz",
+            qpos=simulation.qpos,
+            qvel=simulation.qvel,
+            can_pose=simulation.can_pose,
+            contact_count=simulation.contact_count,
+            grasp_contact=simulation.grasp_contact,
+            ik_position_error_m=simulation.ik_position_error_m,
+            ik_orientation_error_rad=simulation.ik_orientation_error_rad,
+            ik_converged=simulation.ik_converged,
+        )
     if not no_render:
-        _render_trajectory_plot(trajectory, phases, destination / "trajectory_2d.png")
-        replay_fps = 1.0 / (0.002 * config.simulation.render_every)
-        _write_rgb_video(
-            destination / "mujoco_replay.mp4", simulation.rendered_rgb, replay_fps
-        )
-        _render_side_by_side(
-            source,
-            destination / "tracking_overlay.mp4",
-            simulation.rendered_rgb,
-            destination / "side_by_side.mp4",
-            config.simulation.render_size,
-        )
-        _render_contact_sheet(
-            source,
-            destination / "tracking_overlay.mp4",
-            simulation.rendered_rgb,
-            phases,
-            metadata.frame_count,
-            destination / "contact_sheet.png",
-            config.simulation.render_size,
-        )
+        with _pipeline_stage("visualization"):
+            _render_trajectory_plot(
+                trajectory, phases, destination / "trajectory_2d.png"
+            )
+            replay_fps = 1.0 / (0.002 * config.simulation.render_every)
+            _write_rgb_video(
+                destination / "mujoco_replay.mp4", simulation.rendered_rgb, replay_fps
+            )
+            _validate_mp4(destination / "mujoco_replay.mp4")
+            _render_side_by_side(
+                source,
+                destination / "tracking_overlay.mp4",
+                simulation.rendered_rgb,
+                destination / "side_by_side.mp4",
+                config.simulation.render_size,
+            )
+            _validate_mp4(destination / "side_by_side.mp4")
+            _render_contact_sheet(
+                source,
+                destination / "tracking_overlay.mp4",
+                simulation.rendered_rgb,
+                phases,
+                metadata.frame_count,
+                destination / "contact_sheet.png",
+                config.simulation.render_size,
+            )
 
+    perception_warnings = [
+        f"zero_confidence_phase:{phase.label}"
+        for phase in phases
+        if phase.confidence == 0.0
+    ]
     metrics: dict[str, Any] = {
         "status": "completed",
         "source_sha256": measured_sha256,
@@ -479,6 +662,8 @@ def run_experiment(
         "final_support_contact": simulation.final_support_contact,
         "finishes_inside_box": simulation.finishes_inside_box,
         "invalid_numerical_state": simulation.invalid_numerical_state,
+        "perception_status": "degraded" if perception_warnings else "ok",
+        "perception_warnings": perception_warnings,
         "runtime_s": time.perf_counter() - started,
     }
     rejection_reason: str | None = None
@@ -502,7 +687,69 @@ def run_experiment(
                 "action_exported": False,
             },
         )
-    else:
-        np.savez(actions_path, **reference_payload)
-    _atomic_json(destination / "metrics.json", metrics)
+    with _pipeline_stage("metrics"):
+        _atomic_json(destination / "metrics.json", metrics)
+        if rejection_reason is None:
+            np.savez(destination / "actions.npz", **reference_payload)
     return metrics
+
+
+def run_experiment(
+    config_path: str | Path,
+    output_dir: str | Path,
+    *,
+    variant: Variant = "B1",
+    no_render: bool = False,
+) -> dict[str, Any]:
+    """Build one run in isolation, then atomically publish its complete directory."""
+
+    if variant not in ("B0", "B1", "B2", "B3", "B4"):
+        raise ValueError("variant must be B0, B1, B2, B3, or B4")
+    destination = _validated_output_target(output_dir)
+    config_file = Path(config_path).resolve()
+    started = time.perf_counter()
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.staging-", dir=destination.parent
+        )
+    )
+    try:
+        try:
+            metrics = _execute_run(
+                config_file,
+                staging,
+                variant=variant,
+                no_render=no_render,
+                started=started,
+            )
+            _validate_required_run_files(staging, metrics, no_render=no_render)
+        except _PipelineFailure as failure:
+            (staging / "actions.npz").unlink(missing_ok=True)
+            for media_pattern in ("*.mp4", "*.png"):
+                for partial_media in staging.glob(media_pattern):
+                    partial_media.unlink()
+            metrics = {
+                "status": "failed",
+                "variant": variant,
+                "reason": "stage_exception",
+                "failure_stage": failure.stage,
+                "error_type": type(failure.cause).__name__,
+                "error_message": str(failure.cause),
+                "runtime_s": time.perf_counter() - started,
+            }
+            rejection = {
+                "stage": failure.stage,
+                "reason": "stage_exception",
+                "error_type": type(failure.cause).__name__,
+                "error_message": str(failure.cause),
+                "action_exported": False,
+            }
+            _atomic_json(staging / "rejection.json", rejection)
+            _atomic_json(staging / "metrics.json", metrics)
+            _validate_required_run_files(staging, metrics, no_render=no_render)
+        _write_run_manifest(staging, metrics)
+        _publish_staging(staging, destination)
+        return metrics
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
