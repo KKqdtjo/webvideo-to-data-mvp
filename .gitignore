@@ -1,0 +1,10 @@
+.venv/
+.superpowers/
+artifacts/
+video/
+.pytest_cache/
+__pycache__/
+*.pyc
+video-generation/seedance_api.txt
+www.youtube.com_cookies.txt
+*.egg-info/
