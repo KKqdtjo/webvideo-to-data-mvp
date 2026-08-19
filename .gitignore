@@ -6,5 +6,6 @@ video/
 __pycache__/
 *.pyc
 video-generation/seedance_api.txt
+github_token.txt
 www.youtube.com_cookies.txt
 *.egg-info/
