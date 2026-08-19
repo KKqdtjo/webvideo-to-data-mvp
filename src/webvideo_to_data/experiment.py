@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -30,6 +33,8 @@ from .visualization import render_tracking_overlay
 
 
 Variant = Literal["B0", "B1", "B2", "B3", "B4"]
+_RUN_MANIFEST_PRODUCER = "webvideo_to_data.experiment"
+_RUN_MANIFEST_VERSION = 2
 _GENERATED_RUN_FILES = {
     "actions.npz",
     "contact_sheet.png",
@@ -46,6 +51,14 @@ _GENERATED_RUN_FILES = {
     "trajectory_2d.npz",
     "trajectory_2d.png",
 }
+_OUTPUT_LOCKS_GUARD = threading.Lock()
+_OUTPUT_LOCKS: dict[str, threading.Lock] = {}
+
+
+@dataclass(frozen=True)
+class _RunSnapshot:
+    directory_identity: tuple[int, int]
+    files: tuple[tuple[str, int, str], ...]
 
 
 class _PipelineFailure(Exception):
@@ -354,58 +367,350 @@ def _rejected_metrics(
     }
 
 
-def _validated_output_target(output_dir: str | Path) -> Path:
-    destination = Path(output_dir).resolve()
+def _output_candidate(output_dir: str | Path) -> Path:
+    destination = Path(os.path.abspath(os.fspath(output_dir)))
     if destination == Path(destination.anchor) or destination == Path.cwd().resolve():
         raise ValueError("output target is too broad for generated-run replacement")
-    if destination.exists():
-        if destination.is_symlink() or not destination.is_dir():
-            raise ValueError("output target must be a real directory")
-        unrecognized = {
-            child.name for child in destination.iterdir()
-            if (
-                child.name not in _GENERATED_RUN_FILES
-                or not child.is_file()
-                or child.is_symlink()
-            )
-        }
-        if unrecognized:
-            raise ValueError(
-                "output target contains unrecognized files: "
-                + ", ".join(sorted(unrecognized))
-            )
     destination.parent.mkdir(parents=True, exist_ok=True)
     return destination
 
 
-def _publish_staging(staging: Path, destination: Path) -> None:
+@contextmanager
+def _serialized_output(destination: Path) -> Any:
+    lock_key = str(destination).casefold()
+    with _OUTPUT_LOCKS_GUARD:
+        thread_lock = _OUTPUT_LOCKS.setdefault(lock_key, threading.Lock())
+    lock_root = Path(tempfile.gettempdir()) / "webvideo_to_data_locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_name = sha256(lock_key.encode("utf-8")).hexdigest() + ".lock"
+    with thread_lock:
+        with (lock_root / lock_name).open("a+b") as lock_file:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                while True:
+                    try:
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _json_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object in {path.name}")
+    return value
+
+
+def _snapshot_files(directory: Path) -> tuple[tuple[str, int, str], ...]:
+    signatures: list[tuple[str, int, str]] = []
+    for child in sorted(directory.iterdir(), key=lambda item: item.name):
+        if child.is_symlink() or not child.is_file():
+            raise ValueError(f"unrecognized files in generated run: {child.name}")
+        signatures.append((child.name, child.stat().st_size, sha256_file(child)))
+    return tuple(signatures)
+
+
+def _trusted_run_snapshot(directory: Path) -> _RunSnapshot:
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("output target must be a real directory")
+    children = {child.name: child for child in directory.iterdir()}
+    unrecognized = {
+        name
+        for name, child in children.items()
+        if name not in _GENERATED_RUN_FILES or child.is_symlink() or not child.is_file()
+    }
+    if unrecognized:
+        raise ValueError(
+            "output target contains unrecognized files: "
+            + ", ".join(sorted(unrecognized))
+        )
+    manifest_path = children.get("run_manifest.json")
+    if manifest_path is None:
+        raise ValueError("output target lacks a trusted generated-run marker")
+    try:
+        manifest = _json_object(manifest_path)
+        metrics = _json_object(children["metrics.json"])
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("output target lacks a trusted generated-run marker") from error
+    actual_names = set(children) - {"run_manifest.json"}
+    version = manifest.get("format_version")
+    if version == _RUN_MANIFEST_VERSION:
+        manifest_files = manifest.get("files")
+        if (
+            manifest.get("producer") != _RUN_MANIFEST_PRODUCER
+            or not isinstance(manifest_files, dict)
+            or set(manifest_files) != actual_names
+        ):
+            raise ValueError("output target lacks a trusted generated-run marker")
+        for name, recorded in manifest_files.items():
+            child = children[name]
+            if (
+                not isinstance(recorded, dict)
+                or recorded.get("size") != child.stat().st_size
+                or recorded.get("sha256") != sha256_file(child)
+            ):
+                raise ValueError("output target lacks a trusted generated-run marker")
+    else:
+        raise ValueError("output target lacks a trusted generated-run marker")
+    if (
+        manifest.get("status") != metrics.get("status")
+        or manifest.get("variant") != metrics.get("variant")
+    ):
+        raise ValueError("output target lacks a trusted generated-run marker")
+    status = metrics.get("status")
+    has_action = "actions.npz" in actual_names
+    valid_action_semantics = (
+        status == "completed"
+        and has_action
+        and metrics.get("simulation_mode") == "physics_grasp"
+        and metrics.get("placed_successfully") is True
+        and float(metrics.get("reachability_ratio", 0.0)) >= 0.95
+    ) or (status != "completed" and not has_action)
+    if not valid_action_semantics:
+        raise ValueError("output target lacks a trusted generated-run marker")
+    if status in ("failed", "rejected") and "rejection.json" not in actual_names:
+        raise ValueError("output target lacks a trusted generated-run marker")
+    stat = directory.stat()
+    return _RunSnapshot(
+        directory_identity=(int(stat.st_dev), int(stat.st_ino)),
+        files=_snapshot_files(directory),
+    )
+
+
+def _validated_output_target(
+    destination: Path,
+) -> tuple[Path, _RunSnapshot | None]:
+    if destination.exists():
+        return destination, _trusted_run_snapshot(destination)
+    return destination, None
+
+
+def _write_run_manifest(staging: Path, metrics: dict[str, Any]) -> None:
+    files: dict[str, dict[str, Any]] = {}
+    for path in sorted(staging.iterdir(), key=lambda item: item.name):
+        if path.name == "run_manifest.json":
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"cannot manifest non-file artifact: {path.name}")
+        files[path.name] = {"size": path.stat().st_size, "sha256": sha256_file(path)}
+    _atomic_json(
+        staging / "run_manifest.json",
+        {
+            "producer": _RUN_MANIFEST_PRODUCER,
+            "format_version": _RUN_MANIFEST_VERSION,
+            "variant": metrics["variant"],
+            "status": metrics["status"],
+            "files": files,
+        },
+    )
+
+
+def _publication_failure_metrics(
+    *, variant: Variant, stage: str, error: Exception, started: float
+) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "variant": variant,
+        "reason": "publication_exception",
+        "failure_stage": stage,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "runtime_s": time.perf_counter() - started,
+    }
+
+
+def _mark_canonical_publication_failure(
+    destination: Path,
+    *,
+    variant: Variant,
+    stage: str,
+    error: Exception,
+    started: float,
+) -> dict[str, Any]:
+    actions = destination / "actions.npz"
+    if actions.exists():
+        if actions.is_symlink() or not actions.is_file():
+            raise ValueError("canonical action artifact is not a regular file")
+        actions.unlink()
+    metrics = _publication_failure_metrics(
+        variant=variant, stage=stage, error=error, started=started
+    )
+    _atomic_json(
+        destination / "rejection.json",
+        {
+            "stage": stage,
+            "reason": "publication_exception",
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "action_exported": False,
+        },
+    )
+    _atomic_json(destination / "metrics.json", metrics)
+    _write_run_manifest(destination, metrics)
+    return metrics
+
+
+def _assert_destination_unchanged(
+    destination: Path, expected: _RunSnapshot | None
+) -> None:
+    if expected is None:
+        if destination.exists():
+            raise ValueError("output target changed during run")
+        return
+    if not destination.exists():
+        raise ValueError("output target changed during run")
+    try:
+        current = _trusted_run_snapshot(destination)
+    except ValueError as error:
+        raise ValueError("output target changed during run") from error
+    if current != expected:
+        raise ValueError("output target changed during run")
+
+
+def _remove_trusted_backup(backup: Path, expected: _RunSnapshot) -> None:
+    if _trusted_run_snapshot(backup) != expected:
+        raise ValueError("generated backup changed before cleanup")
+    expected_files = {name: (size, digest) for name, size, digest in expected.files}
+    for child in sorted(backup.iterdir(), key=lambda item: item.name):
+        signature = expected_files.get(child.name)
+        if (
+            signature is None
+            or child.is_symlink()
+            or not child.is_file()
+            or (child.stat().st_size, sha256_file(child)) != signature
+        ):
+            raise ValueError("generated backup changed before cleanup")
+        child.unlink()
+    backup.rmdir()
+
+
+def _publish_staging(
+    staging: Path,
+    destination: Path,
+    expected: _RunSnapshot | None,
+    metrics: dict[str, Any],
+    *,
+    variant: Variant,
+    started: float,
+) -> dict[str, Any]:
+    _assert_destination_unchanged(destination, expected)
     backup = destination.parent / f".{destination.name}.backup-{uuid4().hex}"
     if backup.parent != destination.parent or not backup.name.startswith(
         f".{destination.name}.backup-"
     ):
         raise ValueError("unsafe generated backup target")
-    if not destination.exists():
-        staging.replace(destination)
-        return
-    destination.replace(backup)
+    if expected is None:
+        try:
+            staging.replace(destination)
+            return metrics
+        except Exception as error:
+            if destination.exists():
+                raise ValueError("output target changed during run") from error
+            destination.mkdir()
+            return _mark_canonical_publication_failure(
+                destination,
+                variant=variant,
+                stage="publication_swap",
+                error=error,
+                started=started,
+            )
+    try:
+        destination.replace(backup)
+    except Exception as error:
+        if destination.exists():
+            _assert_destination_unchanged(destination, expected)
+        elif backup.exists():
+            if _trusted_run_snapshot(backup) != expected:
+                raise ValueError("output target changed during run") from error
+            destination.mkdir()
+        else:
+            raise ValueError("output target changed during run") from error
+        return _mark_canonical_publication_failure(
+            destination,
+            variant=variant,
+            stage="publication_swap",
+            error=error,
+            started=started,
+        )
+    try:
+        if _trusted_run_snapshot(backup) != expected:
+            raise ValueError("generated backup changed before cleanup")
+    except Exception as error:
+        if destination.exists():
+            raise ValueError("output target changed during run") from error
+        destination.mkdir()
+        return _mark_canonical_publication_failure(
+            destination,
+            variant=variant,
+            stage="publication_cleanup",
+            error=error,
+            started=started,
+        )
     try:
         staging.replace(destination)
-    except Exception:
-        backup.replace(destination)
-        raise
-    shutil.rmtree(backup)
-
-
-def _write_run_manifest(staging: Path, metrics: dict[str, Any]) -> None:
-    _atomic_json(
-        staging / "run_manifest.json",
-        {
-            "format_version": 1,
-            "variant": metrics["variant"],
-            "status": metrics["status"],
-            "files": sorted(path.name for path in staging.iterdir()),
-        },
-    )
+    except Exception as error:
+        try:
+            backup.replace(destination)
+            if _trusted_run_snapshot(destination) != expected:
+                raise ValueError("restored output differs from validated snapshot")
+        except Exception as restore_error:
+            if destination.exists():
+                try:
+                    if _trusted_run_snapshot(destination) != expected:
+                        raise ValueError(
+                            "restored output differs from validated snapshot"
+                        )
+                except Exception as validation_error:
+                    raise ValueError(
+                        "output target changed during rollback"
+                    ) from validation_error
+            else:
+                destination.mkdir()
+            return _mark_canonical_publication_failure(
+                destination,
+                variant=variant,
+                stage="publication_swap",
+                error=error,
+                started=started,
+            )
+        return _mark_canonical_publication_failure(
+            destination,
+            variant=variant,
+            stage="publication_swap",
+            error=error,
+            started=started,
+        )
+    try:
+        _remove_trusted_backup(backup, expected)
+    except Exception as error:
+        return _mark_canonical_publication_failure(
+            destination,
+            variant=variant,
+            stage="publication_cleanup",
+            error=error,
+            started=started,
+        )
+    return metrics
 
 
 def _validate_required_run_files(
@@ -694,20 +999,15 @@ def _execute_run(
     return metrics
 
 
-def run_experiment(
-    config_path: str | Path,
-    output_dir: str | Path,
+def _run_locked_experiment(
+    config_file: Path,
+    destination: Path,
+    expected: _RunSnapshot | None,
     *,
-    variant: Variant = "B1",
-    no_render: bool = False,
+    variant: Variant,
+    no_render: bool,
+    started: float,
 ) -> dict[str, Any]:
-    """Build one run in isolation, then atomically publish its complete directory."""
-
-    if variant not in ("B0", "B1", "B2", "B3", "B4"):
-        raise ValueError("variant must be B0, B1, B2, B3, or B4")
-    destination = _validated_output_target(output_dir)
-    config_file = Path(config_path).resolve()
-    started = time.perf_counter()
     staging = Path(
         tempfile.mkdtemp(
             prefix=f".{destination.name}.staging-", dir=destination.parent
@@ -748,8 +1048,40 @@ def run_experiment(
             _atomic_json(staging / "metrics.json", metrics)
             _validate_required_run_files(staging, metrics, no_render=no_render)
         _write_run_manifest(staging, metrics)
-        _publish_staging(staging, destination)
-        return metrics
+        return _publish_staging(
+            staging,
+            destination,
+            expected,
+            metrics,
+            variant=variant,
+            started=started,
+        )
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def run_experiment(
+    config_path: str | Path,
+    output_dir: str | Path,
+    *,
+    variant: Variant = "B1",
+    no_render: bool = False,
+) -> dict[str, Any]:
+    """Build one run in isolation, then atomically publish its complete directory."""
+
+    if variant not in ("B0", "B1", "B2", "B3", "B4"):
+        raise ValueError("variant must be B0, B1, B2, B3, or B4")
+    destination = _output_candidate(output_dir)
+    config_file = Path(config_path).resolve()
+    started = time.perf_counter()
+    with _serialized_output(destination):
+        destination, expected = _validated_output_target(destination)
+        return _run_locked_experiment(
+            config_file,
+            destination,
+            expected,
+            variant=variant,
+            no_render=no_render,
+            started=started,
+        )

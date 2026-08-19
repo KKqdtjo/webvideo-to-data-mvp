@@ -34,7 +34,7 @@
     "B0": {
       "status": "rejected",
       "reason": "physics_validation_failed",
-      "runtime_s": 3.7561493999965023,
+      "runtime_s": 7.105383200003416,
       "simulation_mode": "physics_grasp",
       "reachability_ratio": 0.0235655737704918,
       "grasp_contact_frames": 0,
@@ -54,7 +54,7 @@
     "B1": {
       "status": "rejected",
       "reason": "kinematic_replay_not_action",
-      "runtime_s": 10.294673100012005,
+      "runtime_s": 12.879757799993968,
       "simulation_mode": "kinematic_replay",
       "reachability_ratio": 0.0969085909507541,
       "grasp_contact_frames": 9761,
@@ -71,9 +71,9 @@
       "placed_successfully": false,
       "action_exported": false
     },
-    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.019967899992479943},
-    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.019398799995542504},
-    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.022025900005246513}
+    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.033506399995530955},
+    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.056003800011239946},
+    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.045648900006199256}
   },
   "artifact_root": "artifacts/EXP-001",
   "binary_artifacts_ignored": true

@@ -5,6 +5,9 @@ from pathlib import Path
 import subprocess
 import sys
 from dataclasses import replace
+import shutil
+import threading
+import time
 
 import cv2
 import numpy as np
@@ -107,6 +110,29 @@ def _assert_readable_video(path: Path) -> None:
         assert capture.get(cv2.CAP_PROP_FPS) > 0
     finally:
         capture.release()
+
+
+def _trusted_action_output(tmp_path: Path) -> tuple[Path, Path]:
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "trusted-action-run"
+    run_experiment(config_path, output_dir, variant="B0", no_render=True)
+    metrics_path = output_dir / "metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics.update(
+        status="completed",
+        placed_successfully=True,
+        reachability_ratio=1.0,
+    )
+    metrics.pop("reason", None)
+    metrics.pop("rejection_stage", None)
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    (output_dir / "rejection.json").unlink()
+    shutil.copyfile(
+        output_dir / "robot_reference.npz", output_dir / "actions.npz"
+    )
+    (output_dir / "run_manifest.json").unlink()
+    experiment_module._write_run_manifest(output_dir, metrics)
+    return config_path, output_dir
 
 
 def test_run_experiment_writes_auditable_orchestration_outputs(tmp_path: Path) -> None:
@@ -278,7 +304,6 @@ def test_b2_replaces_reused_b1_output_instead_of_leaving_stale_files(
     config_path = _synthetic_config(tmp_path)
     output_dir = tmp_path / "reused"
     run_experiment(config_path, output_dir, variant="B1")
-    (output_dir / "actions.npz").write_bytes(b"stale action")
 
     metrics = run_experiment(config_path, output_dir, variant="B2")
 
@@ -328,14 +353,10 @@ def test_parse_failure_publishes_failed_metrics_and_rejection(tmp_path: Path) ->
 def test_hash_failure_replaces_old_output_with_failed_run(tmp_path: Path) -> None:
     """Catch source-integrity failure leaving a previous successful-looking run."""
 
-    config_path = _synthetic_config(tmp_path)
+    config_path, output_dir = _trusted_action_output(tmp_path)
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     document["source"]["sha256"] = "0" * 64
     config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
-    output_dir = tmp_path / "hash-failure"
-    output_dir.mkdir()
-    (output_dir / "actions.npz").write_bytes(b"stale action")
-    (output_dir / "metrics.json").write_text('{"status":"completed"}', encoding="utf-8")
 
     metrics = run_experiment(config_path, output_dir, variant="B0")
 
@@ -491,3 +512,279 @@ def test_zero_confidence_contact_phases_are_recorded_as_degraded(
         "zero_confidence_phase:release",
         "zero_confidence_phase:settle",
     ]
+
+
+def test_personal_metrics_file_without_trusted_marker_is_never_replaced(
+    tmp_path: Path,
+) -> None:
+    """Catch whitelist-only validation deleting a user's personal metrics file."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "personal-metrics"
+    output_dir.mkdir()
+    personal = output_dir / "metrics.json"
+    personal.write_text('{"owner":"user"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="trusted generated-run marker"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+    assert personal.read_text(encoding="utf-8") == '{"owner":"user"}'
+
+
+def test_legacy_manifest_without_producer_or_digests_is_not_trusted(
+    tmp_path: Path,
+) -> None:
+    """Catch an unverifiable v1 marker authorizing deletion of personal files."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "personal-legacy-shaped-output"
+    output_dir.mkdir()
+    (output_dir / "metrics.json").write_text(
+        json.dumps({"status": "not_run", "variant": "B2"}), encoding="utf-8"
+    )
+    (output_dir / "provenance.json").write_text(
+        json.dumps({"owner": "user"}), encoding="utf-8"
+    )
+    (output_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "variant": "B2",
+                "status": "not_run",
+                "files": ["metrics.json", "provenance.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="trusted generated-run marker"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+    assert json.loads((output_dir / "provenance.json").read_text(encoding="utf-8")) == {
+        "owner": "user"
+    }
+
+
+def test_rejected_run_marker_cannot_trust_an_action_artifact(tmp_path: Path) -> None:
+    """Catch a refreshed marker legitimizing stale actions on a rejected run."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "rejected-with-action"
+    run_experiment(config_path, output_dir, variant="B1", no_render=True)
+    shutil.copyfile(
+        output_dir / "robot_reference.npz", output_dir / "actions.npz"
+    )
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    (output_dir / "run_manifest.json").unlink()
+    experiment_module._write_run_manifest(output_dir, metrics)
+
+    with pytest.raises(ValueError, match="trusted generated-run marker"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+    assert (output_dir / "actions.npz").is_file()
+
+
+def test_publish_revalidates_destination_identity_and_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch destination mutation during a long run being recursively deleted."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "mutated-during-run"
+    run_experiment(config_path, output_dir, variant="B2")
+    original_execute = experiment_module._execute_run
+    user_file = output_dir / "user-added.txt"
+
+    def execute_then_mutate(*args: object, **kwargs: object) -> dict[str, object]:
+        metrics = original_execute(*args, **kwargs)
+        user_file.write_text("preserve me", encoding="utf-8")
+        return metrics
+
+    monkeypatch.setattr(experiment_module, "_execute_run", execute_then_mutate)
+
+    with pytest.raises(ValueError, match="changed during run"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+    assert user_file.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_same_output_runs_are_serialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch concurrent publishers validating the same stale output snapshot."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "serialized"
+    original_execute = experiment_module._execute_run
+    state_lock = threading.Lock()
+    start_barrier = threading.Barrier(2)
+    active = 0
+    maximum_active = 0
+    errors: list[BaseException] = []
+
+    def measured_execute(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal active, maximum_active
+        with state_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            time.sleep(0.15)
+            return original_execute(*args, **kwargs)
+        finally:
+            with state_lock:
+                active -= 1
+
+    monkeypatch.setattr(experiment_module, "_execute_run", measured_execute)
+
+    def worker() -> None:
+        try:
+            start_barrier.wait()
+            run_experiment(config_path, output_dir, variant="B2")
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
+
+    assert not errors
+    assert maximum_active == 1
+    assert json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))[
+        "status"
+    ] == "not_run"
+
+
+def test_swap_failure_restores_as_explicit_failure_without_stale_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch staging swap rollback exposing an old action-bearing successful run."""
+
+    config_path, output_dir = _trusted_action_output(tmp_path)
+    real_replace = Path.replace
+
+    def fail_staging_swap(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        if self.name.startswith(f".{output_dir.name}.staging-") and target_path == output_dir:
+            raise OSError("synthetic staging swap failure")
+        return real_replace(self, target_path)
+
+    monkeypatch.setattr(Path, "replace", fail_staging_swap)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_swap"
+    assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+    assert not list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))
+
+
+def test_old_output_rename_post_success_error_still_publishes_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch an old-output rename that succeeds before surfacing an I/O error."""
+
+    config_path, output_dir = _trusted_action_output(tmp_path)
+    real_replace = Path.replace
+
+    def move_old_then_error(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        if self == output_dir and target_path.name.startswith(
+            f".{output_dir.name}.backup-"
+        ):
+            real_replace(self, target_path)
+            raise OSError("synthetic post-rename error")
+        return real_replace(self, target_path)
+
+    monkeypatch.setattr(Path, "replace", move_old_then_error)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_swap"
+    assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+    assert len(list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))) == 1
+
+
+def test_rollback_post_success_error_marks_restored_output_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch rollback succeeding physically before surfacing an I/O error."""
+
+    config_path, output_dir = _trusted_action_output(tmp_path)
+    real_replace = Path.replace
+
+    def fail_swap_and_report_after_restore(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        if self.name.startswith(f".{output_dir.name}.staging-"):
+            raise OSError("synthetic staging swap failure")
+        if self.name.startswith(f".{output_dir.name}.backup-"):
+            real_replace(self, target_path)
+            raise OSError("synthetic post-rollback error")
+        return real_replace(self, target_path)
+
+    monkeypatch.setattr(Path, "replace", fail_swap_and_report_after_restore)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_swap"
+    assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+    assert not list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))
+
+
+def test_backup_cleanup_failure_marks_canonical_run_failed_without_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch post-publish cleanup failure escaping without an explicit rejection."""
+
+    config_path, output_dir = _trusted_action_output(tmp_path)
+    real_unlink = Path.unlink
+
+    def fail_backup_cleanup(self: Path, *args: object, **kwargs: object) -> None:
+        if self.parent.name.startswith(f".{output_dir.name}.backup-"):
+            raise OSError("synthetic backup cleanup failure")
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_backup_cleanup)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_cleanup"
+    assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+    assert len(list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))) == 1
+
+
+def test_mutated_backup_is_quarantined_and_never_recursively_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch backup mutation between swap and cleanup being recursively deleted."""
+
+    config_path, output_dir = _trusted_action_output(tmp_path)
+    real_replace = Path.replace
+
+    def mutate_backup_after_rename(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        result = real_replace(self, target_path)
+        if self == output_dir and target_path.name.startswith(
+            f".{output_dir.name}.backup-"
+        ):
+            (target_path / "user-added.txt").write_text("preserve me", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(Path, "replace", mutate_backup_after_rename)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_cleanup"
+    backups = list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "user-added.txt").read_text(encoding="utf-8") == "preserve me"
+    assert not (output_dir / "actions.npz").exists()

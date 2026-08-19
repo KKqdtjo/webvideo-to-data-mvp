@@ -87,3 +87,13 @@ valid track ratio 为 1.0，共推断 4 个阶段：approach 0.000–0.033 s（c
 runner 已改为同级 fresh staging + validated directory swap。parse、SHA、tracking、simulation 或 visualization exception 都会发布可审计的 failed metrics/rejection；复用 output 不会保留旧 action/media。发布前每个 MP4 均通过 ffprobe duration 与首帧解码；`--no-render` 不创建 MuJoCo Renderer。B0 配置起终点已实际透传，相对 source 改为相对 config 目录解析。
 
 修复后真实 B0–B4 重跑的 runtime 为 3.7561494、10.2946731、0.0199679、0.0193988、0.0220259 秒。完整测试为 54 passed，compileall exit 0，六个 MP4 duration>0；B0/B1 无 action，B2–B4 各自只有 manifest/provenance/metrics。实验结论与失败口径不变。
+
+## Fix round 2/5：可信所有权与并发发布
+
+review 指出白名单文件名不是目录所有权证明，而且首次验证与约 10 秒后的 swap 之间存在 TOCTOU。修复采用 v2 `run_manifest.json`：marker 固定 producer，并记录每个生成文件的 byte size 与 SHA-256；无 producer/digest 的 v1 marker 无法证明归属，安全拒绝且不做替换。
+
+RED 覆盖个人 `metrics.json`、伪 v1 marker、运行中 content mutation、同路径并发运行、staging swap/rollback、backup cleanup、backup 中途加入用户文件，以及 rejected marker 携带 stale action。实现后，同一 canonical output 的验证、运行与发布由进程内锁和跨进程文件锁串行化；发布瞬间再次核对目录 identity 与完整内容 snapshot。backup 仅在再次验证后逐个 unlink 已签名普通文件，绝不递归删除；任何变异 backup 被隔离保留。swap/rollback/cleanup 故障会让 canonical output 明确记录 `status=failed` 与 `rejection.json`，且 canonical 不含 `actions.npz`。
+
+真实 B0–B4 重新运行并发布 v2 marker。runtime 分别为 B0 7.1053832 s、B1 12.8797578 s、B2 0.0335064 s、B3 0.0560038 s、B4 0.0456489 s。物理结论不变：B0 reachability=0.0235655737704918、双指接触 0、lift=0、not placed；B1 仍为 rejected kinematic diagnostic；B2–B4 仍分别为 `metric_depth_not_available`。B0/B1 无 action，B2–B4 目录隔离，无 staging/backup 残留；六个 MP4 ffprobe duration 仍为 B0 3.9/7.0/7.0 s 与 B1 24.0/7.0/7.0 s。
+
+最终验证：experiment regression 28 passed；完整 suite 64 passed in 41.45 s；compileall exit 0。
