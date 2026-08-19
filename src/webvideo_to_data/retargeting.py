@@ -1,5 +1,6 @@
 """Map tracked image motion into canonical robot references."""
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -30,6 +31,8 @@ class RobotReference:
         quaternions = np.asarray(self.quaternion_wxyz, dtype=float)
         widths = np.asarray(self.gripper_width, dtype=float)
         frame_count = len(timestamps)
+        if frame_count == 0:
+            raise ValueError("RobotReference must contain at least one frame")
         if timestamps.ndim != 1 or np.any(np.diff(timestamps) <= 0.0):
             raise ValueError("timestamps_s must be a strictly increasing [T] array")
         if positions.shape != (frame_count, 3):
@@ -42,8 +45,13 @@ class RobotReference:
             raise ValueError("phase must contain one label per frame")
         if self.source_variant not in ("B0", "B1"):
             raise ValueError("source_variant must be B0 or B1")
-        if not all(np.isfinite(values).all() for values in (timestamps, positions, quaternions, widths)):
+        if not all(
+            np.isfinite(values).all()
+            for values in (timestamps, positions, quaternions, widths)
+        ):
             raise ValueError("reference values must be finite")
+        if not np.allclose(np.linalg.norm(quaternions, axis=1), 1.0, atol=1e-6):
+            raise ValueError("quaternion_wxyz must contain nonzero unit orientations")
         object.__setattr__(self, "timestamps_s", timestamps)
         object.__setattr__(self, "ee_positions", positions)
         object.__setattr__(self, "quaternion_wxyz", quaternions)
@@ -113,6 +121,7 @@ def build_pick_place_reference(
     y_bounds: tuple[float, float] = (0.35, 0.65),
     max_speed_m_s: float = 0.35,
     sample_period_s: float = 0.1,
+    post_release_hold_s: float = 1.0,
 ) -> RobotReference:
     """Build a speed-limited, seven-phase object-centric pick/place reference."""
 
@@ -122,6 +131,8 @@ def build_pick_place_reference(
         raise ValueError("at least one phase interval is required")
     if max_speed_m_s <= 0.0 or sample_period_s <= 0.0:
         raise ValueError("speed and sample period must be positive")
+    if post_release_hold_s < 1.0:
+        raise ValueError("post_release_hold_s must be at least 1.0")
 
     if variant == "B0":
         start_xy = np.array([0.12, 0.45])
@@ -159,6 +170,16 @@ def build_pick_place_reference(
     _densify_segment(positions, labels, widths, transport, "transport", 0.0, maximum_step)
     _densify_segment(positions, labels, widths, [lowered], "lower", 0.0, maximum_step)
     _densify_segment(positions, labels, widths, [goal], "open", 0.08, maximum_step)
+    hold_steps = math.ceil(post_release_hold_s / sample_period_s)
+    _densify_segment(
+        positions,
+        labels,
+        widths,
+        [goal] * hold_steps,
+        "open",
+        0.08,
+        maximum_step,
+    )
     _densify_segment(positions, labels, widths, [retreat], "retreat", 0.08, maximum_step)
 
     positions_array = np.asarray(positions, dtype=float)

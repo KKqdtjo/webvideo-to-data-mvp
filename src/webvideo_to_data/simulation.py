@@ -26,11 +26,22 @@ class SimulationResult:
     contact_count: NDArray[np.int64]
     minimum_distance_m: float
     target_error_m: float
+    target_height_error_m: float
     rendered_rgb: NDArray[np.uint8]
     invalid_numerical_state: bool
     placed_successfully: bool
     maximum_lift_m: float
+    maximum_can_height_gain_m: float
+    grasp_contact: NDArray[np.bool_]
+    gripper_width_m: NDArray[np.float64]
+    gripper_closed: NDArray[np.bool_]
     support_contact_duration_s: float
+    final_support_contact: bool
+    finishes_inside_box: bool
+    ik_position_error_m: NDArray[np.float64]
+    ik_orientation_error_rad: NDArray[np.float64]
+    ik_converged: NDArray[np.bool_]
+    reachability_ratio: float
 
 
 def _named_id(model: mujoco.MjModel, object_type: mujoco.mjtObj, name: str) -> int:
@@ -56,7 +67,7 @@ def _apply_damped_ik(
     joint_ids: list[int],
     actuator_ids: list[int],
     damping: float,
-) -> None:
+) -> tuple[float, float]:
     jacobian_position = np.zeros((3, model.nv), dtype=float)
     jacobian_rotation = np.zeros((3, model.nv), dtype=float)
     mujoco.mj_jacSite(
@@ -95,6 +106,7 @@ def _apply_damped_ik(
         if model.jnt_limited[joint_id]:
             target = float(np.clip(target, *model.jnt_range[joint_id]))
         data.ctrl[actuator_id] = target
+    return float(np.linalg.norm(error[:3])), float(np.linalg.norm(rotation_error))
 
 
 def _minimum_hand_can_distance(
@@ -119,6 +131,38 @@ def _has_support_contact(
         {int(data.contact[index].geom1), int(data.contact[index].geom2)}
         == required_pair
         for index in range(data.ncon)
+    )
+
+
+def _has_grasp_contact(
+    data: mujoco.MjData, can_geom_id: int, finger_geom_ids: list[int]
+) -> bool:
+    required_pairs = [{can_geom_id, finger_id} for finger_id in finger_geom_ids]
+    return any(
+        {int(data.contact[index].geom1), int(data.contact[index].geom2)}
+        in required_pairs
+        for index in range(data.ncon)
+    )
+
+
+def _placement_success(
+    *,
+    mode: ReplayMode,
+    qualifying_lift_m: float,
+    finishes_inside_box: bool,
+    support_contact_duration_s: float,
+    final_support_contact: bool,
+    invalid_numerical_state: bool,
+    reachability_ratio: float,
+) -> bool:
+    return bool(
+        mode == "physics_grasp"
+        and qualifying_lift_m >= 0.03
+        and finishes_inside_box
+        and support_contact_duration_s >= 1.0
+        and final_support_contact
+        and not invalid_numerical_state
+        and reachability_ratio >= 0.95
     )
 
 
@@ -163,6 +207,12 @@ def run_mujoco_replay(
     support_geom_id = _named_id(
         model, mujoco.mjtObj.mjOBJ_GEOM, "box_floor_geom"
     )
+    box_wall_x_id = _named_id(
+        model, mujoco.mjtObj.mjOBJ_GEOM, "box_wall_pos_x"
+    )
+    box_wall_y_id = _named_id(
+        model, mujoco.mjtObj.mjOBJ_GEOM, "box_wall_pos_y"
+    )
     can_joint_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, "can_free")
     can_qpos_address = model.jnt_qposadr[can_joint_id]
     joint_ids = [
@@ -177,15 +227,31 @@ def run_mujoco_replay(
         _named_id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
         for name in ("left_finger_act", "right_finger_act")
     ]
+    finger_geom_ids = [
+        _named_id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        for name in ("left_finger_geom", "right_finger_geom")
+    ]
+    finger_joint_ids = [
+        _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        for name in ("left_finger_joint", "right_finger_joint")
+    ]
+    finger_qpos_addresses = [model.jnt_qposadr[joint_id] for joint_id in finger_joint_ids]
 
     initial_can_z = float(data.xpos[can_body_id, 2])
     qpos_history = np.empty((requested_steps, model.nq), dtype=float)
     qvel_history = np.empty((requested_steps, model.nv), dtype=float)
     can_pose_history = np.empty((requested_steps, 7), dtype=float)
     contact_history = np.empty(requested_steps, dtype=np.int64)
+    grasp_contact_history = np.empty(requested_steps, dtype=bool)
+    gripper_width_history = np.empty(requested_steps, dtype=float)
+    gripper_closed_history = np.empty(requested_steps, dtype=bool)
+    ik_position_error = np.empty(requested_steps, dtype=float)
+    ik_orientation_error = np.empty(requested_steps, dtype=float)
     minimum_distance = np.inf
     current_support_duration = 0.0
-    maximum_support_duration = 0.0
+    release_started = False
+    final_support_contact = False
+    qualifying_lift = 0.0
     frames: list[NDArray[np.uint8]] = []
 
     render_width, render_height = render_size
@@ -193,7 +259,10 @@ def run_mujoco_replay(
     try:
         for step in range(requested_steps):
             reference_index = _reference_index(reference, float(data.time))
-            _apply_damped_ik(
+            (
+                ik_position_error[step],
+                ik_orientation_error[step],
+            ) = _apply_damped_ik(
                 model,
                 data,
                 reference.ee_positions[reference_index],
@@ -220,12 +289,30 @@ def run_mujoco_replay(
             can_pose_history[step, :3] = data.xpos[can_body_id]
             can_pose_history[step, 3:] = data.xquat[can_body_id]
             contact_history[step] = data.ncon
+            grasp_contact_history[step] = _has_grasp_contact(
+                data, can_geom_id, finger_geom_ids
+            )
+            gripper_width_history[step] = sum(
+                data.qpos[address] for address in finger_qpos_addresses
+            )
+            gripper_closed_history[step] = gripper_width_history[step] <= 0.01
+            if (
+                reference.phase[reference_index] in ("lift", "transport")
+                and gripper_closed_history[step]
+                and grasp_contact_history[step]
+            ):
+                qualifying_lift = max(
+                    qualifying_lift,
+                    float(data.xpos[can_body_id, 2] - initial_can_z),
+                )
             if reference.phase[reference_index] == "open":
-                if _has_support_contact(data, can_geom_id, support_geom_id):
+                release_started = True
+            if release_started:
+                final_support_contact = _has_support_contact(
+                    data, can_geom_id, support_geom_id
+                )
+                if final_support_contact:
                     current_support_duration += timestep
-                    maximum_support_duration = max(
-                        maximum_support_duration, current_support_duration
-                    )
                 else:
                     current_support_duration = 0.0
             minimum_distance = min(
@@ -244,21 +331,38 @@ def run_mujoco_replay(
         and np.isfinite(can_pose_history).all()
     )
     invalid = invalid or any(warning.number > 0 for warning in data.warning)
-    maximum_lift = float(np.max(can_pose_history[:, 2]) - initial_can_z)
-    target_error = float(np.linalg.norm(can_pose_history[-1, :3] - data.xpos[box_body_id]))
+    maximum_can_height_gain = float(
+        np.max(can_pose_history[:, 2]) - initial_can_z
+    )
+    ik_converged = (ik_position_error <= 0.03) & (ik_orientation_error <= 0.35)
+    reachability_ratio = float(np.mean(ik_converged))
+    target_error = float(
+        np.linalg.norm(can_pose_history[-1, :2] - data.xpos[box_body_id, :2])
+    )
+    target_height_error = float(
+        abs(can_pose_history[-1, 2] - data.xpos[box_body_id, 2])
+    )
     box_center_xy = data.geom_xpos[support_geom_id, :2]
-    available_margin = model.geom_size[support_geom_id, :2] - model.geom_size[
-        can_geom_id, 0
-    ]
+    interior_half_extent = np.array(
+        [
+            abs(data.geom_xpos[box_wall_x_id, 0] - box_center_xy[0])
+            - model.geom_size[box_wall_x_id, 0],
+            abs(data.geom_xpos[box_wall_y_id, 1] - box_center_xy[1])
+            - model.geom_size[box_wall_y_id, 1],
+        ]
+    )
+    available_margin = interior_half_extent - model.geom_size[can_geom_id, 0]
     finishes_inside_box = bool(
         np.all(np.abs(can_pose_history[-1, :2] - box_center_xy) <= available_margin)
     )
-    placed_successfully = bool(
-        mode == "physics_grasp"
-        and maximum_lift >= 0.03
-        and finishes_inside_box
-        and maximum_support_duration >= 1.0
-        and not invalid
+    placed_successfully = _placement_success(
+        mode=mode,
+        qualifying_lift_m=qualifying_lift,
+        finishes_inside_box=finishes_inside_box,
+        support_contact_duration_s=current_support_duration,
+        final_support_contact=final_support_contact,
+        invalid_numerical_state=invalid,
+        reachability_ratio=reachability_ratio,
     )
     rendered = (
         np.asarray(frames, dtype=np.uint8)
@@ -273,9 +377,20 @@ def run_mujoco_replay(
         contact_count=contact_history,
         minimum_distance_m=float(minimum_distance),
         target_error_m=target_error,
+        target_height_error_m=target_height_error,
         rendered_rgb=rendered,
         invalid_numerical_state=invalid,
         placed_successfully=placed_successfully,
-        maximum_lift_m=maximum_lift,
-        support_contact_duration_s=maximum_support_duration,
+        maximum_lift_m=qualifying_lift,
+        maximum_can_height_gain_m=maximum_can_height_gain,
+        grasp_contact=grasp_contact_history,
+        gripper_width_m=gripper_width_history,
+        gripper_closed=gripper_closed_history,
+        support_contact_duration_s=current_support_duration,
+        final_support_contact=final_support_contact,
+        finishes_inside_box=finishes_inside_box,
+        ik_position_error_m=ik_position_error,
+        ik_orientation_error_rad=ik_orientation_error,
+        ik_converged=ik_converged,
+        reachability_ratio=reachability_ratio,
     )

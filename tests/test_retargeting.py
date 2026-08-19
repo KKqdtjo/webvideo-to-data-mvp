@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from webvideo_to_data.retargeting import (
     RobotReference,
@@ -81,6 +82,7 @@ def test_b0_reference_has_all_phases_fixed_poses_and_bounded_speed() -> None:
     open_index = reference.phase.index("open")
     np.testing.assert_allclose(reference.ee_positions[close_index], [0.12, 0.45, 0.04])
     np.testing.assert_allclose(reference.ee_positions[open_index], [-0.05, 0.55, 0.13])
+    assert reference.timestamps_s[-1] - reference.timestamps_s[open_index] >= 1.0
     speed = np.linalg.norm(
         np.diff(reference.ee_positions, axis=0)
         / np.diff(reference.timestamps_s)[:, None],
@@ -103,3 +105,39 @@ def test_b1_maps_stable_endpoints_and_preserves_tracked_path_shape() -> None:
         np.asarray(reference.phase) == "transport", :2
     ]
     assert np.max(transport_xy[:, 1] - np.linspace(0.40, 0.60, len(transport_xy))) > 0.03
+
+
+def test_robot_reference_rejects_empty_timeline() -> None:
+    with pytest.raises(ValueError, match="at least one frame"):
+        RobotReference(
+            timestamps_s=np.empty(0),
+            ee_positions=np.empty((0, 3)),
+            quaternion_wxyz=np.empty((0, 4)),
+            gripper_width=np.empty(0),
+            phase=(),
+            source_variant="B0",
+        )
+
+
+def test_robot_reference_rejects_zero_norm_quaternion() -> None:
+    with pytest.raises(ValueError, match="nonzero unit orientations"):
+        RobotReference(
+            timestamps_s=np.array([0.0]),
+            ee_positions=np.array([[0.0, 0.0, 0.0]]),
+            quaternion_wxyz=np.zeros((1, 4)),
+            gripper_width=np.array([0.08]),
+            phase=("approach",),
+            source_variant="B0",
+        )
+
+
+def test_robot_reference_rejects_nonfinite_quaternion() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        RobotReference(
+            timestamps_s=np.array([0.0]),
+            ee_positions=np.array([[0.0, 0.0, 0.0]]),
+            quaternion_wxyz=np.array([[np.nan, 0.0, 0.0, 0.0]]),
+            gripper_width=np.array([0.08]),
+            phase=("approach",),
+            source_variant="B0",
+        )
