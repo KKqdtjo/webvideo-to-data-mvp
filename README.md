@@ -26,6 +26,17 @@ LK 的 `lk_point_availability_ratio=1.0` 仅表示点 confidence/forward-backwar
 
 完整实测报告与机器指标见 [`experiments/EXP-001-phone-can-mujoco/report.md`](experiments/EXP-001-phone-can-mujoco/report.md) 和 [`metrics.json`](experiments/EXP-001-phone-can-mujoco/metrics.json)。可再生成的媒体位于 ignored `artifacts/EXP-001/`。
 
+### 直观实验结果
+
+精选可视化发布在 [`exp001-diagnostic-v0.1`](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/tag/exp001-diagnostic-v0.1)：
+
+| 变体 | 视频—仿真并排回放 | 跟踪叠加 | MuJoCo 回放 | 检查帧 |
+| --- | --- | --- | --- | --- |
+| B0 physics diagnostic | [side-by-side](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B0-side-by-side.mp4) | [tracking overlay](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B0-tracking-overlay.mp4) | [MuJoCo replay](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B0-mujoco-replay.mp4) | [contact sheet](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B0-contact-sheet.png) |
+| B1 kinematic diagnostic | [side-by-side](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B1-side-by-side.mp4) | [tracking overlay](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B1-tracking-overlay.mp4) | [MuJoCo replay](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B1-mujoco-replay.mp4) | [contact sheet](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/download/exp001-diagnostic-v0.1/B1-contact-sheet.png) |
+
+这些视频用于直观检查数据链路，不代表动作有效：B0 没有完成物理抓取，B1 通过对象位姿覆盖产生运动学回放且存在跟踪点漂到手部的问题。两者都被拒绝，均未导出机器人 action。Release 不包含原始手机视频、凭据或 NPZ 数据。
+
 ### 输入视频
 
 主样本：[`video/手机录制.mp4`](video/手机录制.mp4)
