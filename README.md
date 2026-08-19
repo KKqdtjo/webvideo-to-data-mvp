@@ -28,6 +28,18 @@ LK 的 `lk_point_availability_ratio=1.0` 仅表示点 confidence/forward-backwar
 
 ### 直观实验结果
 
+#### B0：physics diagnostic
+
+![B0 原视频、跟踪结果与 MuJoCo 物理诊断并排动画](docs/media/exp001-b0-side-by-side.gif)
+
+B0 动画展示了完整链路确实执行，但不是成功抓取：IK reachability 只有 0.0235656，没有持续双指接触，物理 lift 为 0，最终被拒绝。
+
+#### B1：kinematic diagnostic
+
+![B1 原视频、跟踪结果与 MuJoCo 运动学诊断并排动画](docs/media/exp001-b1-side-by-side.gif)
+
+B1 动画更接近视频中的物体运动，但它使用对象位姿覆盖，不是物理抓取。人工视觉 QA 还观察到放置后 LK 点从罐体漂到手上，因此 endpoint/path 不可靠，最终同样被拒绝。
+
 精选可视化发布在 [`exp001-diagnostic-v0.1`](https://github.com/KKqdtjo/webvideo-to-data-mvp/releases/tag/exp001-diagnostic-v0.1)：
 
 | 变体 | 视频—仿真并排回放 | 跟踪叠加 | MuJoCo 回放 | 检查帧 |
