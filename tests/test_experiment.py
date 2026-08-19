@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -122,9 +123,13 @@ def _trusted_action_output(tmp_path: Path) -> tuple[Path, Path]:
         status="completed",
         placed_successfully=True,
         reachability_ratio=1.0,
+        collision_validation="passed",
+        action_export_eligible=True,
+        action_exported=True,
     )
     metrics.pop("reason", None)
     metrics.pop("rejection_stage", None)
+    metrics.pop("action_export_reason", None)
     metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
     (output_dir / "rejection.json").unlink()
     shutil.copyfile(
@@ -164,23 +169,58 @@ def test_run_experiment_writes_auditable_orchestration_outputs(tmp_path: Path) -
     assert metrics == on_disk
     assert {
         "source_sha256",
-        "valid_track_ratio",
+        "lk_point_availability_ratio",
         "phase_count",
         "variant",
         "simulation_mode",
         "placed_successfully",
     } <= on_disk.keys()
+    assert "valid_track_ratio" not in on_disk
+    assert on_disk["lk_metric_scope"] == "point_availability_not_semantic_accuracy"
+    assert on_disk["semantic_accuracy_status"] == "not_measured"
     assert on_disk["source_sha256"] == sha256_file(source)
     assert on_disk["variant"] == "B1"
     assert on_disk["simulation_mode"] == "kinematic_replay"
     assert on_disk["placed_successfully"] is False
     assert on_disk["status"] == "rejected"
     assert on_disk["reason"] == "kinematic_replay_not_action"
+    assert on_disk["action_export_eligible"] is False
+    assert on_disk["collision_validation"] == "not_implemented"
+    assert on_disk["action_export_reason"] == "collision_validation_not_implemented"
     assert not (output_dir / "actions.npz").exists()
     for name in ("tracking_overlay.mp4", "mujoco_replay.mp4", "side_by_side.mp4"):
         _assert_readable_video(output_dir / name)
     for name in ("trajectory_2d.png", "contact_sheet.png"):
         assert cv2.imread(str(output_dir / name)) is not None
+    provenance = json.loads(
+        (output_dir / "provenance.json").read_text(encoding="utf-8")
+    )
+    assert provenance["generator"]["git_commit"] == subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    assert isinstance(provenance["generator"]["git_dirty"], bool)
+    assert provenance["config"]["sha256"] == sha256_file(config_path)
+    assert provenance["config"]["path"] == str(config_path.resolve())
+    assert provenance["config"]["resolved"]["experiment_id"] == "SYNTHETIC"
+    model_path = Path(provenance["model"]["path"])
+    assert provenance["model"]["sha256"] == sha256_file(model_path)
+    assert provenance["model"]["description"] == "primitive_7dof_panda_like_diagnostic"
+    assert provenance["runtime"]["python"]
+    assert provenance["runtime"]["packages"]["mujoco"]
+    assert provenance["runtime"]["packages"]["opencv-python"]
+    source_probe = provenance["ffprobe"]["source"]
+    assert source_probe["codec_name"]
+    assert source_probe["width"] == 96
+    assert source_probe["height"] == 72
+    assert source_probe["duration_s"] > 0.0
+    assert set(provenance["ffprobe"]["generated_media"]) == {
+        "mujoco_replay.mp4",
+        "side_by_side.mp4",
+        "tracking_overlay.mp4",
+    }
 
 
 def test_metric_depth_variants_are_not_run_instead_of_copying_b1(tmp_path: Path) -> None:
@@ -201,6 +241,8 @@ def test_metric_depth_variants_are_not_run_instead_of_copying_b1(tmp_path: Path)
         "source_sha256": sha256_file(tmp_path / "moving.mp4"),
     }
     assert metrics["runtime_s"] >= 0.0
+    assert metrics["action_export_eligible"] is False
+    assert metrics["action_export_reason"] == "collision_validation_not_implemented"
     assert not (output_dir / "actions.npz").exists()
 
 
@@ -215,8 +257,38 @@ def test_failed_physics_validation_does_not_export_actions(tmp_path: Path) -> No
     assert metrics["status"] == "rejected"
     assert metrics["reason"] == "physics_validation_failed"
     assert metrics["reachability_ratio"] < 0.95
+    assert metrics["action_export_eligible"] is False
+    assert metrics["collision_validation"] == "not_implemented"
+    assert metrics["action_export_reason"] == "collision_validation_not_implemented"
     assert (output_dir / "robot_reference.npz").is_file()
     assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+
+
+def test_passing_physics_verdict_cannot_export_without_collision_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a placement-only success gate exporting collision-unvalidated actions."""
+
+    config_path = _synthetic_config(tmp_path)
+    real_replay = experiment_module.run_mujoco_replay
+
+    def passing_replay(*args: object, **kwargs: object) -> object:
+        return replace(
+            real_replay(*args, **kwargs),
+            placed_successfully=True,
+            reachability_ratio=1.0,
+        )
+
+    monkeypatch.setattr(experiment_module, "run_mujoco_replay", passing_replay)
+    output_dir = tmp_path / "collision-unvalidated"
+
+    metrics = run_experiment(config_path, output_dir, variant="B0", no_render=True)
+
+    assert metrics["status"] == "rejected"
+    assert metrics["reason"] == "collision_validation_not_implemented"
+    assert metrics["action_export_eligible"] is False
+    assert metrics["collision_validation"] == "not_implemented"
     assert not (output_dir / "actions.npz").exists()
 
 
@@ -563,6 +635,92 @@ def test_legacy_manifest_without_producer_or_digests_is_not_trusted(
     assert json.loads((output_dir / "provenance.json").read_text(encoding="utf-8")) == {
         "owner": "user"
     }
+
+
+@pytest.mark.parametrize(
+    "metrics_update",
+    [
+        {"status": "mystery", "reason": "unknown_status"},
+        {"status": "not_run", "reason": None},
+        {"status": "rejected", "reason": None},
+    ],
+)
+def test_trusted_manifest_rejects_unknown_or_reasonless_terminal_status(
+    tmp_path: Path, metrics_update: dict[str, object]
+) -> None:
+    """Catch malformed terminal metrics authorizing generated-output replacement."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "invalid-terminal-status"
+    run_experiment(config_path, output_dir, variant="B2")
+    metrics_path = output_dir / "metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics.update(metrics_update)
+    if metrics.get("reason") is None:
+        metrics.pop("reason", None)
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    if metrics["status"] == "rejected":
+        (output_dir / "rejection.json").write_text(
+            json.dumps({"stage": "test", "reason": "test"}), encoding="utf-8"
+        )
+    (output_dir / "run_manifest.json").unlink()
+    experiment_module._write_run_manifest(output_dir, metrics)
+
+    with pytest.raises(ValueError, match="trusted generated-run marker"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+
+def test_trusted_manifest_rejects_completed_without_collision_validation(
+    tmp_path: Path,
+) -> None:
+    """Catch a placement-only completed marker legitimizing unsafe actions."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "completed-without-collision-validation"
+    run_experiment(config_path, output_dir, variant="B0", no_render=True)
+    metrics_path = output_dir / "metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics.update(
+        status="completed",
+        placed_successfully=True,
+        reachability_ratio=1.0,
+        collision_validation="not_implemented",
+        action_export_eligible=False,
+    )
+    metrics.pop("reason", None)
+    metrics.pop("rejection_stage", None)
+    (output_dir / "rejection.json").unlink()
+    shutil.copyfile(output_dir / "robot_reference.npz", output_dir / "actions.npz")
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    (output_dir / "run_manifest.json").unlink()
+    experiment_module._write_run_manifest(output_dir, metrics)
+
+    with pytest.raises(ValueError, match="trusted generated-run marker"):
+        run_experiment(config_path, output_dir, variant="B2")
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"status": "mystery", "variant": "B2", "reason": "unknown"},
+        {
+            "status": "not_run",
+            "variant": "B2",
+            "action_export_eligible": False,
+        },
+    ],
+)
+def test_publication_contract_rejects_invalid_terminal_metrics(
+    tmp_path: Path, metrics: dict[str, object]
+) -> None:
+    """Catch an internally malformed status reaching manifest publication."""
+
+    (tmp_path / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+
+    with pytest.raises(experiment_module._PipelineFailure, match="terminal metrics"):
+        experiment_module._validate_required_run_files(
+            tmp_path, metrics, no_render=True
+        )
 
 
 def test_rejected_run_marker_cannot_trust_an_action_artifact(tmp_path: Path) -> None:
@@ -952,6 +1110,8 @@ with _serialized_output(destination):
             raise TimeoutError("release sentinel was not created")
         time.sleep(0.01)
 """
+    child_env = os.environ.copy()
+    child_env.update(OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1")
 
     first = subprocess.Popen(
         [
@@ -961,7 +1121,8 @@ with _serialized_output(destination):
             str(physical_parent / "output"),
             str(entered_first),
             str(release_first),
-        ]
+        ],
+        env=child_env,
     )
     second: subprocess.Popen[bytes] | None = None
     try:
@@ -979,7 +1140,8 @@ with _serialized_output(destination):
                 str(entered_second),
                 str(release_second),
                 str(ready_second),
-            ]
+            ],
+            env=child_env,
         )
         deadline = time.monotonic() + 10.0
         while not ready_second.exists():

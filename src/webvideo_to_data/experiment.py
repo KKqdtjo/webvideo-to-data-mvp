@@ -17,8 +17,11 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import cv2
+from importlib import metadata as importlib_metadata
 import matplotlib
+import mujoco
 import numpy as np
+import sys
 import yaml
 
 matplotlib.use("Agg")
@@ -27,14 +30,22 @@ import matplotlib.pyplot as plt
 from .contact import infer_motion_phases
 from .media import probe_video, sha256_file
 from .retargeting import build_pick_place_reference
-from .simulation import run_mujoco_replay
+from .schema import RunStatus
+from .simulation import _DEFAULT_MODEL_PATH, run_mujoco_replay
 from .tracking import track_roi_lk
 from .visualization import render_tracking_overlay
 
 
 Variant = Literal["B0", "B1", "B2", "B3", "B4"]
 _RUN_MANIFEST_PRODUCER = "webvideo_to_data.experiment"
-_RUN_MANIFEST_VERSION = 2
+_RUN_MANIFEST_VERSION = 3
+_COLLISION_BLOCK_REASON = "collision_validation_not_implemented"
+_ACTION_EXPORT_BLOCK = {
+    "collision_validation": "not_implemented",
+    "action_export_eligible": False,
+    "action_export_reason": _COLLISION_BLOCK_REASON,
+    "action_exported": False,
+}
 _GENERATED_RUN_FILES = {
     "actions.npz",
     "contact_sheet.png",
@@ -195,16 +206,18 @@ def _write_rgb_video(path: Path, frames: np.ndarray, fps: float) -> None:
         writer.release()
 
 
-def _validate_mp4(path: Path) -> float:
+def _ffprobe_video_facts(path: Path) -> dict[str, Any]:
     completed = subprocess.run(
         [
             "ffprobe",
             "-v",
             "error",
+            "-select_streams",
+            "v:0",
             "-show_entries",
-            "format=duration",
+            "stream=codec_name,width,height,avg_frame_rate,nb_frames:format=duration,format_name",
             "-of",
-            "default=nw=1:nk=1",
+            "json",
             str(path),
         ],
         text=True,
@@ -212,11 +225,42 @@ def _validate_mp4(path: Path) -> float:
         check=False,
     )
     try:
-        duration = float(completed.stdout.strip())
-    except ValueError as error:
-        raise ValueError(f"ffprobe returned no valid duration for {path}") from error
-    if completed.returncode != 0 or duration <= 0.0:
+        payload = json.loads(completed.stdout)
+        stream = payload["streams"][0]
+        duration = float(payload["format"]["duration"])
+        width = int(stream["width"])
+        height = int(stream["height"])
+        numerator, denominator = stream["avg_frame_rate"].split("/", maxsplit=1)
+        fps = float(numerator) / float(denominator)
+    except (IndexError, KeyError, TypeError, ValueError, ZeroDivisionError) as error:
+        raise ValueError(f"ffprobe returned no valid video facts for {path}") from error
+    if (
+        completed.returncode != 0
+        or duration <= 0.0
+        or width <= 0
+        or height <= 0
+        or fps <= 0.0
+        or not stream.get("codec_name")
+    ):
         raise ValueError(f"ffprobe rejected {path}: {completed.stderr.strip()}")
+    frame_count_raw = stream.get("nb_frames")
+    try:
+        frame_count = int(frame_count_raw)
+    except (TypeError, ValueError):
+        frame_count = None
+    return {
+        "codec_name": str(stream["codec_name"]),
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "frame_count": frame_count,
+        "duration_s": duration,
+        "format_name": str(payload["format"].get("format_name", "")),
+    }
+
+
+def _validate_mp4(path: Path) -> dict[str, Any]:
+    facts = _ffprobe_video_facts(path)
     capture = cv2.VideoCapture(str(path))
     try:
         ok, frame = capture.read()
@@ -224,7 +268,55 @@ def _validate_mp4(path: Path) -> float:
             raise ValueError(f"MP4 is not decodable: {path}")
     finally:
         capture.release()
-    return duration
+    return facts
+
+
+def _git_generator_provenance() -> dict[str, Any]:
+    repository = Path(__file__).resolve().parents[2]
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    )
+    return {"git_commit": commit, "git_dirty": dirty}
+
+
+def _runtime_provenance() -> dict[str, Any]:
+    package_names = (
+        "webvideo-to-data",
+        "numpy",
+        "scipy",
+        "opencv-python",
+        "mujoco",
+        "imageio",
+        "matplotlib",
+        "PyYAML",
+    )
+    packages = {name: importlib_metadata.version(name) for name in package_names}
+    packages["mujoco"] = mujoco.__version__
+    packages["opencv-python"] = cv2.__version__
+    ffprobe_version = subprocess.run(
+        ["ffprobe", "-version"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.splitlines()[0]
+    return {
+        "python": sys.version,
+        "packages": packages,
+        "tools": {"ffprobe": ffprobe_version},
+    }
 
 
 def _render_trajectory_plot(trajectory: Any, phases: Any, output: Path) -> None:
@@ -350,13 +442,20 @@ def _render_contact_sheet(
 
 
 def _rejected_metrics(
-    *, variant: Variant, source_sha256: str, valid_track_ratio: float, stage: str,
-    reason: str, started: float
+    *,
+    variant: Variant,
+    source_sha256: str,
+    lk_point_availability_ratio: float,
+    stage: str,
+    reason: str,
+    started: float,
 ) -> dict[str, Any]:
     return {
-        "status": "rejected",
+        "status": RunStatus.REJECTED.value,
         "source_sha256": source_sha256,
-        "valid_track_ratio": valid_track_ratio,
+        "lk_point_availability_ratio": lk_point_availability_ratio,
+        "lk_metric_scope": "point_availability_not_semantic_accuracy",
+        "semantic_accuracy_status": "not_measured",
         "phase_count": 0,
         "variant": variant,
         "simulation_mode": None,
@@ -364,6 +463,7 @@ def _rejected_metrics(
         "rejection_stage": stage,
         "reason": reason,
         "runtime_s": time.perf_counter() - started,
+        **_ACTION_EXPORT_BLOCK,
     }
 
 
@@ -453,6 +553,48 @@ def _directory_snapshot(directory: Path) -> _RunSnapshot:
     return _RunSnapshot(directory_identity=after_identity, files=files)
 
 
+def _terminal_metrics_error(
+    metrics: dict[str, Any], file_names: set[str]
+) -> str | None:
+    status = metrics.get("status")
+    if status not in {member.value for member in RunStatus}:
+        return "unknown terminal status"
+    if metrics.get("variant") not in ("B0", "B1", "B2", "B3", "B4"):
+        return "unknown experiment variant"
+    has_action = "actions.npz" in file_names
+    reason = metrics.get("reason")
+    if status == RunStatus.COMPLETED.value:
+        if not (
+            has_action
+            and reason is None
+            and metrics.get("action_export_eligible") is True
+            and metrics.get("action_exported") is True
+            and metrics.get("collision_validation") == "passed"
+            and metrics.get("simulation_mode") == "physics_grasp"
+            and metrics.get("placed_successfully") is True
+            and float(metrics.get("reachability_ratio", 0.0)) >= 0.95
+        ):
+            return "completed status lacks validated action eligibility"
+    else:
+        if has_action:
+            return "non-completed status contains an action"
+        if not isinstance(reason, str) or not reason.strip():
+            return "non-completed status lacks a reason"
+        if metrics.get("action_export_eligible") is not False:
+            return "non-completed status lacks explicit action ineligibility"
+        if metrics.get("action_exported") is not False:
+            return "non-completed status must record action_exported=false"
+    if status == RunStatus.REJECTED.value:
+        if "rejection.json" not in file_names or not metrics.get("rejection_stage"):
+            return "rejected status lacks rejection diagnostics"
+    elif status == RunStatus.FAILED.value:
+        if "rejection.json" not in file_names or not metrics.get("failure_stage"):
+            return "failed status lacks failure diagnostics"
+    elif status == RunStatus.NOT_RUN.value and "rejection.json" in file_names:
+        return "not_run status must not contain rejection diagnostics"
+    return None
+
+
 def _trusted_run_snapshot(directory: Path) -> _RunSnapshot:
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("output target must be a real directory")
@@ -500,18 +642,7 @@ def _trusted_run_snapshot(directory: Path) -> _RunSnapshot:
         or manifest.get("variant") != metrics.get("variant")
     ):
         raise ValueError("output target lacks a trusted generated-run marker")
-    status = metrics.get("status")
-    has_action = "actions.npz" in actual_names
-    valid_action_semantics = (
-        status == "completed"
-        and has_action
-        and metrics.get("simulation_mode") == "physics_grasp"
-        and metrics.get("placed_successfully") is True
-        and float(metrics.get("reachability_ratio", 0.0)) >= 0.95
-    ) or (status != "completed" and not has_action)
-    if not valid_action_semantics:
-        raise ValueError("output target lacks a trusted generated-run marker")
-    if status in ("failed", "rejected") and "rejection.json" not in actual_names:
+    if _terminal_metrics_error(metrics, actual_names) is not None:
         raise ValueError("output target lacks a trusted generated-run marker")
     return _directory_snapshot(directory)
 
@@ -548,13 +679,14 @@ def _publication_failure_metrics(
     *, variant: Variant, stage: str, error: Exception, started: float
 ) -> dict[str, Any]:
     return {
-        "status": "failed",
+        "status": RunStatus.FAILED.value,
         "variant": variant,
         "reason": "publication_exception",
         "failure_stage": stage,
         "error_type": type(error).__name__,
         "error_message": str(error),
         "runtime_s": time.perf_counter() - started,
+        **_ACTION_EXPORT_BLOCK,
     }
 
 
@@ -851,6 +983,13 @@ def _publish_staging(
 def _validate_required_run_files(
     staging: Path, metrics: dict[str, Any], *, no_render: bool
 ) -> None:
+    terminal_error = _terminal_metrics_error(
+        metrics, {path.name for path in staging.iterdir()}
+    )
+    if terminal_error is not None:
+        raise _PipelineFailure(
+            "publication", ValueError(f"invalid terminal metrics: {terminal_error}")
+        )
     required = {"metrics.json"}
     if metrics["status"] == "failed":
         required.add("rejection.json")
@@ -901,6 +1040,7 @@ def _execute_run(
 ) -> dict[str, Any]:
     with _pipeline_stage("config"):
         config = load_experiment_config(config_file)
+        config_sha256 = sha256_file(config_file)
         np.random.seed(config.random_seed)
 
     with _pipeline_stage("source_probe"):
@@ -912,32 +1052,52 @@ def _execute_run(
                 f"got {measured_sha256}"
             )
         metadata = probe_video(source)
+        source_ffprobe = _ffprobe_video_facts(source)
         if not np.isclose(metadata.fps, config.source.fps, atol=0.05):
             raise ValueError(
                 f"source FPS mismatch: expected {config.source.fps}, got {metadata.fps}"
             )
 
     with _pipeline_stage("provenance"):
+        generated_media_ffprobe: dict[str, dict[str, Any]] = {}
+        provenance = {
+            "experiment_id": config.experiment_id,
+            "generator": _git_generator_provenance(),
+            "config": {
+                "path": str(config_file),
+                "sha256": config_sha256,
+                "resolved": asdict(config),
+            },
+            "source_path": str(source),
+            "source_sha256": measured_sha256,
+            "variant": variant,
+            "random_seed": config.random_seed,
+            "source_metadata": asdict(metadata),
+            "model": {
+                "path": str(_DEFAULT_MODEL_PATH.resolve()),
+                "sha256": sha256_file(_DEFAULT_MODEL_PATH),
+                "description": "primitive_7dof_panda_like_diagnostic",
+                "collision_validation": "not_implemented",
+            },
+            "runtime": _runtime_provenance(),
+            "ffprobe": {
+                "source": source_ffprobe,
+                "generated_media": generated_media_ffprobe,
+            },
+        }
         _atomic_json(
             destination / "provenance.json",
-            {
-                "experiment_id": config.experiment_id,
-                "config_path": str(config_file),
-                "source_path": str(source),
-                "source_sha256": measured_sha256,
-                "variant": variant,
-                "random_seed": config.random_seed,
-                "source_metadata": asdict(metadata),
-            },
+            provenance,
         )
 
     if variant in ("B2", "B3", "B4"):
         metrics = {
-            "status": "not_run",
+            "status": RunStatus.NOT_RUN.value,
             "variant": variant,
             "reason": "metric_depth_not_available",
             "source_sha256": measured_sha256,
             "runtime_s": time.perf_counter() - started,
+            **_ACTION_EXPORT_BLOCK,
         }
         with _pipeline_stage("metrics"):
             _atomic_json(destination / "metrics.json", metrics)
@@ -956,16 +1116,16 @@ def _execute_run(
             centers_px=trajectory.centers_px,
             confidence=trajectory.confidence,
         )
-        valid_track_ratio = float(np.mean(trajectory.confidence > 0.0))
-    if valid_track_ratio < config.tracking.minimum_valid_ratio:
-        reason = "valid_track_ratio_below_minimum"
+        lk_point_availability_ratio = float(np.mean(trajectory.confidence > 0.0))
+    if lk_point_availability_ratio < config.tracking.minimum_valid_ratio:
+        reason = "lk_point_availability_ratio_below_minimum"
         _atomic_json(
             destination / "rejection.json",
             {
                 "stage": "tracking",
                 "reason": reason,
-                "measured_valid_track_ratio": valid_track_ratio,
-                "minimum_valid_track_ratio": config.tracking.minimum_valid_ratio,
+                "measured_lk_point_availability_ratio": lk_point_availability_ratio,
+                "minimum_lk_point_availability_ratio": config.tracking.minimum_valid_ratio,
             },
         )
         if not no_render:
@@ -977,11 +1137,14 @@ def _execute_run(
                     destination / "tracking_overlay.mp4",
                     roi_size=config.source.roi_xywh[2:],
                 )
-                _validate_mp4(destination / "tracking_overlay.mp4")
+                generated_media_ffprobe["tracking_overlay.mp4"] = _validate_mp4(
+                    destination / "tracking_overlay.mp4"
+                )
+        _atomic_json(destination / "provenance.json", provenance)
         metrics = _rejected_metrics(
             variant=variant,
             source_sha256=measured_sha256,
-            valid_track_ratio=valid_track_ratio,
+            lk_point_availability_ratio=lk_point_availability_ratio,
             stage="tracking",
             reason=reason,
             started=started,
@@ -1004,7 +1167,9 @@ def _execute_run(
                 destination / "tracking_overlay.mp4",
                 roi_size=config.source.roi_xywh[2:],
             )
-            _validate_mp4(destination / "tracking_overlay.mp4")
+            generated_media_ffprobe["tracking_overlay.mp4"] = _validate_mp4(
+                destination / "tracking_overlay.mp4"
+            )
 
     with _pipeline_stage("retargeting"):
         retargeting_variant = "B0" if variant == "B0" else "B1"
@@ -1060,7 +1225,9 @@ def _execute_run(
             _write_rgb_video(
                 destination / "mujoco_replay.mp4", simulation.rendered_rgb, replay_fps
             )
-            _validate_mp4(destination / "mujoco_replay.mp4")
+            generated_media_ffprobe["mujoco_replay.mp4"] = _validate_mp4(
+                destination / "mujoco_replay.mp4"
+            )
             _render_side_by_side(
                 source,
                 destination / "tracking_overlay.mp4",
@@ -1068,7 +1235,9 @@ def _execute_run(
                 destination / "side_by_side.mp4",
                 config.simulation.render_size,
             )
-            _validate_mp4(destination / "side_by_side.mp4")
+            generated_media_ffprobe["side_by_side.mp4"] = _validate_mp4(
+                destination / "side_by_side.mp4"
+            )
             _render_contact_sheet(
                 source,
                 destination / "tracking_overlay.mp4",
@@ -1078,6 +1247,7 @@ def _execute_run(
                 destination / "contact_sheet.png",
                 config.simulation.render_size,
             )
+    _atomic_json(destination / "provenance.json", provenance)
 
     perception_warnings = [
         f"zero_confidence_phase:{phase.label}"
@@ -1085,9 +1255,11 @@ def _execute_run(
         if phase.confidence == 0.0
     ]
     metrics: dict[str, Any] = {
-        "status": "completed",
+        "status": RunStatus.REJECTED.value,
         "source_sha256": measured_sha256,
-        "valid_track_ratio": valid_track_ratio,
+        "lk_point_availability_ratio": lk_point_availability_ratio,
+        "lk_metric_scope": "point_availability_not_semantic_accuracy",
+        "semantic_accuracy_status": "not_measured",
         "phase_count": len(phases),
         "variant": variant,
         "simulation_mode": simulation.mode,
@@ -1105,32 +1277,34 @@ def _execute_run(
         "perception_status": "degraded" if perception_warnings else "ok",
         "perception_warnings": perception_warnings,
         "runtime_s": time.perf_counter() - started,
+        **_ACTION_EXPORT_BLOCK,
     }
     rejection_reason: str | None = None
     if simulation.mode == "kinematic_replay":
         rejection_reason = "kinematic_replay_not_action"
     elif not simulation.placed_successfully or simulation.reachability_ratio < 0.95:
         rejection_reason = "physics_validation_failed"
-    if rejection_reason is not None:
-        metrics["status"] = "rejected"
-        metrics["rejection_stage"] = "simulation"
-        metrics["reason"] = rejection_reason
-        _atomic_json(
-            destination / "rejection.json",
-            {
-                "stage": "simulation",
-                "reason": rejection_reason,
-                "simulation_mode": simulation.mode,
-                "placed_successfully": simulation.placed_successfully,
-                "reachability_ratio": simulation.reachability_ratio,
-                "required_reachability_ratio": 0.95,
-                "action_exported": False,
-            },
-        )
+    else:
+        rejection_reason = _COLLISION_BLOCK_REASON
+    metrics["rejection_stage"] = "simulation"
+    metrics["reason"] = rejection_reason
+    _atomic_json(
+        destination / "rejection.json",
+        {
+            "stage": "simulation",
+            "reason": rejection_reason,
+            "simulation_mode": simulation.mode,
+            "placed_successfully": simulation.placed_successfully,
+            "reachability_ratio": simulation.reachability_ratio,
+            "required_reachability_ratio": 0.95,
+            "collision_validation": "not_implemented",
+            "action_export_eligible": False,
+            "action_export_reason": _COLLISION_BLOCK_REASON,
+            "action_exported": False,
+        },
+    )
     with _pipeline_stage("metrics"):
         _atomic_json(destination / "metrics.json", metrics)
-        if rejection_reason is None:
-            np.savez(destination / "actions.npz", **reference_payload)
     return metrics
 
 
@@ -1164,19 +1338,22 @@ def _run_locked_experiment(
                 for partial_media in staging.glob(media_pattern):
                     partial_media.unlink()
             metrics = {
-                "status": "failed",
+                "status": RunStatus.FAILED.value,
                 "variant": variant,
                 "reason": "stage_exception",
                 "failure_stage": failure.stage,
                 "error_type": type(failure.cause).__name__,
                 "error_message": str(failure.cause),
                 "runtime_s": time.perf_counter() - started,
+                **_ACTION_EXPORT_BLOCK,
             }
             rejection = {
                 "stage": failure.stage,
                 "reason": "stage_exception",
                 "error_type": type(failure.cause).__name__,
                 "error_message": str(failure.cause),
+                "action_export_eligible": False,
+                "action_export_reason": _COLLISION_BLOCK_REASON,
                 "action_exported": False,
             }
             _atomic_json(staging / "rejection.json", rejection)

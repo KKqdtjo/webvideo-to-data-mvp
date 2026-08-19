@@ -57,8 +57,8 @@ def test_trajectory_converts_sequences_to_numpy_arrays():
 
 def test_run_status_has_auditable_terminal_values():
     assert {status.value for status in RunStatus} == {
-        "success",
-        "degraded",
+        "completed",
+        "not_run",
         "rejected",
         "failed",
     }

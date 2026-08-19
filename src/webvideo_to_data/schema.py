@@ -11,8 +11,8 @@ from numpy.typing import NDArray
 class RunStatus(str, Enum):
     """Terminal status of an auditable pipeline run."""
 
-    SUCCESS = "success"
-    DEGRADED = "degraded"
+    COMPLETED = "completed"
+    NOT_RUN = "not_run"
     REJECTED = "rejected"
     FAILED = "failed"
 
