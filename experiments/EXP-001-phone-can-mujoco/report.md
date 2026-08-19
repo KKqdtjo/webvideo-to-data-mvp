@@ -102,6 +102,14 @@ RED 覆盖个人 `metrics.json`、伪 v1 marker、运行中 content mutation、�
 
 新增 fresh/existing 两个真实 RED：`staging.replace(destination)` 已完成物理 rename 后抛异常时，前者误报 changed-during-run 且没有 publication rejection，后者错误尝试把旧 backup 覆盖到已存在的新 canonical，最终同样没有 rejection。修复在 swap 前保存可信 staging identity/file snapshot；异常后只可能按 snapshot 把 canonical 判定为已发布 staging、原 run、runner 新建空目录或外部替换。前三种写明确 failure，外部替换不写不删。
 
-`_mark_canonical_publication_failure` 现在必须接收并重新验证 runner-owned expected snapshot；canonical identity/content 不匹配会拒绝 failure reporting，测试确认个人 `metrics.json` 保持原样。lock key 改为 resolved parent 的 `st_dev/st_ino` 加 normalized basename，不再依赖 lexical path。Windows 无 symlink 权限时用 `\\?\` 物理别名进行真实双进程测试；第二进程到达 lock 前置 ready barrier 后，直到第一进程释放才可进入。
+round 3 的 `_mark_canonical_publication_failure` 接收并重新验证 runner-owned expected snapshot，能拒绝 helper 调用前已发生的 canonical replacement；该 precheck 与随后 pathname mutation 之间仍有竞态，见 round 4。lock key 改为 resolved parent 的 `st_dev/st_ino` 加 normalized basename，不再依赖 lexical path。Windows 无 symlink 权限时用 `\\?\` 物理别名进行真实双进程测试；第二进程到达 lock 前置 ready barrier 后，直到第一进程释放才可进入。
 
 本轮不改变 tracking/simulation/rendering 或 artifact schema，因此未重跑真实视频。现有 B0–B4 均通过当前 v2 manifest/hash validator：B0/B1 仍为 rejected 且无 action，B2–B4 仍为独立 `metric_depth_not_available`，无 staging/backup。六个 MP4 ffprobe duration 保持 B0 3.9/7.0/7.0 s、B1 24.0/7.0/7.0 s。最终 experiment regression 32 passed，完整 suite 68 passed in 44.76 s，compileall exit 0。
+
+## Fix round 4/5：failure marker 的 check/use 隔离
+
+新增确定性 RED 在 expected snapshot 返回成功后、首次 action unlink 前替换 canonical，并放入个人 action/metrics/rejection；旧 helper 未报错且删除/覆盖个人文件。第二个 RED 在 runner-owned working 隔离后由外部目录占据 canonical，约束 restore 不得覆盖个人内容，并要求 runner failure 留在 actionless sibling working。
+
+failure reporting 现在先把 canonical 原子移动到唯一 `.failure-working-<uuid>` sibling，再对移动后目录重新核对原 expected identity/content。若移动的是外部 replacement，候选只会在 canonical 仍空时原样恢复；否则保留在唯一 working 位置并停止，不 unlink 或覆盖其中任何文件。只有移动后仍精确属于 runner 的目录才会在 working pathname 下移除 action、写 failed metrics/rejection/manifest；最终仅在 canonical 未被占据时移回。若 canonical 已被外部占据，个人目录保持原样，runner-owned failed working 被保留且不含 action。任何这些分支都不递归删除目录。
+
+本轮仍未改变真实数据链路或 artifact schema，因此未重跑 B0–B4。当前 validator/hash audit 仍确认 B0/B1 rejected 且无 action，B2–B4 为 `metric_depth_not_available`，无 staging/backup/failure-working 残留；六个 MP4 duration 均 >0。最终 experiment regression 34 passed，完整 suite 70 passed in 36.83 s，compileall exit 0。

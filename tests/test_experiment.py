@@ -787,6 +787,102 @@ def test_publication_failure_marker_refuses_external_canonical_replacement(
     assert personal.read_text(encoding="utf-8") == '{"owner":"user"}'
 
 
+def test_publication_failure_marker_does_not_mutate_post_snapshot_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch canonical replacement between ownership validation and first mutation."""
+
+    _, output_dir = _trusted_action_output(tmp_path)
+    expected = experiment_module._trusted_run_snapshot(output_dir)
+    runner_output = tmp_path / "runner-output-moved-after-snapshot"
+    personal_actions = b"personal action bytes"
+    personal_metrics = '{"owner":"user","kind":"metrics"}'
+    personal_rejection = '{"owner":"user","kind":"rejection"}'
+    real_snapshot = experiment_module._directory_snapshot
+    swapped = False
+
+    def snapshot_then_swap(path: Path) -> object:
+        nonlocal swapped
+        snapshot = real_snapshot(path)
+        if path == output_dir and not swapped:
+            swapped = True
+            output_dir.replace(runner_output)
+            output_dir.mkdir()
+            (output_dir / "actions.npz").write_bytes(personal_actions)
+            (output_dir / "metrics.json").write_text(
+                personal_metrics, encoding="utf-8"
+            )
+            (output_dir / "rejection.json").write_text(
+                personal_rejection, encoding="utf-8"
+            )
+        return snapshot
+
+    monkeypatch.setattr(experiment_module, "_directory_snapshot", snapshot_then_swap)
+
+    with pytest.raises(ValueError, match="canonical output changed"):
+        experiment_module._mark_canonical_publication_failure(
+            output_dir,
+            expected=expected,
+            variant="B2",
+            stage="publication_swap",
+            error=OSError("synthetic publication error"),
+            started=time.perf_counter(),
+        )
+
+    assert (output_dir / "actions.npz").read_bytes() == personal_actions
+    assert (output_dir / "metrics.json").read_text(encoding="utf-8") == personal_metrics
+    assert (
+        output_dir / "rejection.json"
+    ).read_text(encoding="utf-8") == personal_rejection
+
+
+def test_publication_failure_restore_conflict_leaves_safe_actionless_working_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch failure restoration overwriting a newly occupied canonical path."""
+
+    _, output_dir = _trusted_action_output(tmp_path)
+    expected = experiment_module._trusted_run_snapshot(output_dir)
+    personal_actions = b"personal canonical action"
+    personal_metrics = '{"owner":"user","kind":"canonical"}'
+    real_replace = Path.replace
+
+    def occupy_canonical_after_isolation(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        result = real_replace(self, target_path)
+        if self == output_dir and target_path.name.startswith(
+            f".{output_dir.name}.failure-working-"
+        ):
+            output_dir.mkdir()
+            (output_dir / "actions.npz").write_bytes(personal_actions)
+            (output_dir / "metrics.json").write_text(
+                personal_metrics, encoding="utf-8"
+            )
+        return result
+
+    monkeypatch.setattr(Path, "replace", occupy_canonical_after_isolation)
+
+    metrics = experiment_module._mark_canonical_publication_failure(
+        output_dir,
+        expected=expected,
+        variant="B2",
+        stage="publication_swap",
+        error=OSError("synthetic publication error"),
+        started=time.perf_counter(),
+    )
+
+    assert metrics["status"] == "failed"
+    assert (output_dir / "actions.npz").read_bytes() == personal_actions
+    assert (output_dir / "metrics.json").read_text(encoding="utf-8") == personal_metrics
+    working = list(output_dir.parent.glob(f".{output_dir.name}.failure-working-*"))
+    assert len(working) == 1
+    assert not (working[0] / "actions.npz").exists()
+    assert json.loads((working[0] / "metrics.json").read_text(encoding="utf-8"))[
+        "status"
+    ] == "failed"
+    assert (working[0] / "rejection.json").is_file()
+
+
 def test_rollback_post_success_error_marks_restored_output_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

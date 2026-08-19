@@ -573,7 +573,47 @@ def _mark_canonical_publication_failure(
         raise ValueError("canonical output changed before failure reporting") from validation_error
     if current != expected:
         raise ValueError("canonical output changed before failure reporting")
-    actions = destination / "actions.npz"
+    working = destination.parent / (
+        f".{destination.name}.failure-working-{uuid4().hex}"
+    )
+    if (
+        working.parent != destination.parent
+        or not working.name.startswith(f".{destination.name}.failure-working-")
+        or working.exists()
+    ):
+        raise ValueError("unsafe publication failure working target")
+    try:
+        destination.replace(working)
+    except Exception as isolation_error:
+        if not working.exists():
+            raise ValueError(
+                "canonical output could not be isolated for failure reporting"
+            ) from isolation_error
+    try:
+        moved = _directory_snapshot(working)
+    except ValueError as validation_error:
+        if not destination.exists() and working.exists():
+            try:
+                working.rename(destination)
+            except Exception:
+                pass
+        preserved = working if working.exists() else destination
+        raise ValueError(
+            "canonical output changed before failure reporting; "
+            f"candidate preserved at {preserved}"
+        ) from validation_error
+    if moved != expected:
+        if not destination.exists():
+            try:
+                working.rename(destination)
+            except Exception:
+                pass
+        preserved = working if working.exists() else destination
+        raise ValueError(
+            "canonical output changed before failure reporting; "
+            f"candidate preserved at {preserved}"
+        )
+    actions = working / "actions.npz"
     if actions.exists():
         if actions.is_symlink() or not actions.is_file():
             raise ValueError("canonical action artifact is not a regular file")
@@ -582,7 +622,7 @@ def _mark_canonical_publication_failure(
         variant=variant, stage=stage, error=error, started=started
     )
     _atomic_json(
-        destination / "rejection.json",
+        working / "rejection.json",
         {
             "stage": stage,
             "reason": "publication_exception",
@@ -591,8 +631,23 @@ def _mark_canonical_publication_failure(
             "action_exported": False,
         },
     )
-    _atomic_json(destination / "metrics.json", metrics)
-    _write_run_manifest(destination, metrics)
+    _atomic_json(working / "metrics.json", metrics)
+    _write_run_manifest(working, metrics)
+    failed = _trusted_run_snapshot(working)
+    if destination.exists():
+        return metrics
+    try:
+        working.rename(destination)
+    except Exception as restore_error:
+        if not working.exists() and destination.exists():
+            try:
+                if _trusted_run_snapshot(destination) == failed:
+                    return metrics
+            except ValueError:
+                pass
+            raise ValueError(
+                "canonical output changed after failure reporting"
+            ) from restore_error
     return metrics
 
 
