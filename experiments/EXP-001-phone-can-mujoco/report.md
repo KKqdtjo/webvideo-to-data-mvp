@@ -92,8 +92,16 @@ runner 已改为同级 fresh staging + validated directory swap。parse、SHA、
 
 review 指出白名单文件名不是目录所有权证明，而且首次验证与约 10 秒后的 swap 之间存在 TOCTOU。修复采用 v2 `run_manifest.json`：marker 固定 producer，并记录每个生成文件的 byte size 与 SHA-256；无 producer/digest 的 v1 marker 无法证明归属，安全拒绝且不做替换。
 
-RED 覆盖个人 `metrics.json`、伪 v1 marker、运行中 content mutation、同路径并发运行、staging swap/rollback、backup cleanup、backup 中途加入用户文件，以及 rejected marker 携带 stale action。实现后，同一 canonical output 的验证、运行与发布由进程内锁和跨进程文件锁串行化；发布瞬间再次核对目录 identity 与完整内容 snapshot。backup 仅在再次验证后逐个 unlink 已签名普通文件，绝不递归删除；任何变异 backup 被隔离保留。swap/rollback/cleanup 故障会让 canonical output 明确记录 `status=failed` 与 `rejection.json`，且 canonical 不含 `actions.npz`。
+RED 覆盖个人 `metrics.json`、伪 v1 marker、运行中 content mutation、同路径并发运行、staging swap/rollback、backup cleanup、backup 中途加入用户文件，以及 rejected marker 携带 stale action。round 2 当时的锁以 lexical absolute path 为 key，只证明相同路径字符串的串行化；物理 alias 与 staging rename post-success error 尚未覆盖，见 round 3。发布瞬间会再次核对目录 identity 与完整内容 snapshot。backup 仅在再次验证后逐个 unlink 已签名普通文件，绝不递归删除；任何变异 backup 被隔离保留。
 
 真实 B0–B4 重新运行并发布 v2 marker。runtime 分别为 B0 7.1053832 s、B1 12.8797578 s、B2 0.0335064 s、B3 0.0560038 s、B4 0.0456489 s。物理结论不变：B0 reachability=0.0235655737704918、双指接触 0、lift=0、not placed；B1 仍为 rejected kinematic diagnostic；B2–B4 仍分别为 `metric_depth_not_available`。B0/B1 无 action，B2–B4 目录隔离，无 staging/backup 残留；六个 MP4 ffprobe duration 仍为 B0 3.9/7.0/7.0 s 与 B1 24.0/7.0/7.0 s。
 
 最终验证：experiment regression 28 passed；完整 suite 64 passed in 41.45 s；compileall exit 0。
+
+## Fix round 3/5：staging post-success reconciliation 与物理 alias lock
+
+新增 fresh/existing 两个真实 RED：`staging.replace(destination)` 已完成物理 rename 后抛异常时，前者误报 changed-during-run 且没有 publication rejection，后者错误尝试把旧 backup 覆盖到已存在的新 canonical，最终同样没有 rejection。修复在 swap 前保存可信 staging identity/file snapshot；异常后只可能按 snapshot 把 canonical 判定为已发布 staging、原 run、runner 新建空目录或外部替换。前三种写明确 failure，外部替换不写不删。
+
+`_mark_canonical_publication_failure` 现在必须接收并重新验证 runner-owned expected snapshot；canonical identity/content 不匹配会拒绝 failure reporting，测试确认个人 `metrics.json` 保持原样。lock key 改为 resolved parent 的 `st_dev/st_ino` 加 normalized basename，不再依赖 lexical path。Windows 无 symlink 权限时用 `\\?\` 物理别名进行真实双进程测试；第二进程到达 lock 前置 ready barrier 后，直到第一进程释放才可进入。
+
+本轮不改变 tracking/simulation/rendering 或 artifact schema，因此未重跑真实视频。现有 B0–B4 均通过当前 v2 manifest/hash validator：B0/B1 仍为 rejected 且无 action，B2–B4 仍为独立 `metric_depth_not_available`，无 staging/backup。六个 MP4 ffprobe duration 保持 B0 3.9/7.0/7.0 s、B1 24.0/7.0/7.0 s。最终 experiment regression 32 passed，完整 suite 68 passed in 44.76 s，compileall exit 0。

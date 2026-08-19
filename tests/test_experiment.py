@@ -709,6 +709,84 @@ def test_old_output_rename_post_success_error_still_publishes_rejection(
     assert len(list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))) == 1
 
 
+def test_fresh_staging_rename_post_success_error_publishes_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a fresh staging rename succeeding before surfacing an I/O error."""
+
+    config_path = _synthetic_config(tmp_path)
+    output_dir = tmp_path / "fresh-post-success"
+    real_replace = Path.replace
+
+    def move_staging_then_error(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        if self.name.startswith(f".{output_dir.name}.staging-"):
+            real_replace(self, target_path)
+            raise OSError("synthetic post-staging-rename error")
+        return real_replace(self, target_path)
+
+    monkeypatch.setattr(Path, "replace", move_staging_then_error)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_swap"
+    assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+
+
+def test_existing_staging_rename_post_success_error_publishes_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a replacement staging rename succeeding before reporting failure."""
+
+    config_path, output_dir = _trusted_action_output(tmp_path)
+    real_replace = Path.replace
+
+    def move_staging_then_error(self: Path, target: Path) -> Path:
+        target_path = Path(target)
+        if self.name.startswith(f".{output_dir.name}.staging-"):
+            real_replace(self, target_path)
+            raise OSError("synthetic post-staging-rename error")
+        return real_replace(self, target_path)
+
+    monkeypatch.setattr(Path, "replace", move_staging_then_error)
+
+    metrics = run_experiment(config_path, output_dir, variant="B2")
+
+    assert metrics["status"] == "failed"
+    assert metrics["failure_stage"] == "publication_swap"
+    assert (output_dir / "rejection.json").is_file()
+    assert not (output_dir / "actions.npz").exists()
+    assert not list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))
+
+
+def test_publication_failure_marker_refuses_external_canonical_replacement(
+    tmp_path: Path,
+) -> None:
+    """Catch failure reporting overwriting a canonical directory it no longer owns."""
+
+    _, output_dir = _trusted_action_output(tmp_path)
+    expected = experiment_module._trusted_run_snapshot(output_dir)
+    quarantine = tmp_path / "runner-output-moved-away"
+    output_dir.replace(quarantine)
+    output_dir.mkdir()
+    personal = output_dir / "metrics.json"
+    personal.write_text('{"owner":"user"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="canonical output changed"):
+        experiment_module._mark_canonical_publication_failure(
+            output_dir,
+            expected=expected,
+            variant="B2",
+            stage="publication_swap",
+            error=OSError("synthetic publication error"),
+            started=time.perf_counter(),
+        )
+
+    assert personal.read_text(encoding="utf-8") == '{"owner":"user"}'
+
+
 def test_rollback_post_success_error_marks_restored_output_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -735,6 +813,99 @@ def test_rollback_post_success_error_marks_restored_output_failed(
     assert (output_dir / "rejection.json").is_file()
     assert not (output_dir / "actions.npz").exists()
     assert not list(output_dir.parent.glob(f".{output_dir.name}.backup-*"))
+
+
+def test_parent_path_alias_serializes_across_processes(tmp_path: Path) -> None:
+    """Catch lexical lock keys allowing alias paths to publish concurrently."""
+
+    physical_parent = tmp_path / "physical-parent"
+    physical_parent.mkdir()
+    alias_parent = tmp_path / "parent-alias"
+    try:
+        alias_parent.symlink_to(physical_parent, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        if sys.platform != "win32":
+            pytest.skip(f"directory symlinks are unavailable: {error}")
+        alias_parent = Path("\\\\?\\" + str(physical_parent))
+        if not alias_parent.samefile(physical_parent):
+            pytest.skip(f"directory path aliases are unavailable: {error}")
+
+    entered_first = tmp_path / "entered-first"
+    entered_second = tmp_path / "entered-second"
+    ready_second = tmp_path / "ready-second"
+    release_first = tmp_path / "release-first"
+    release_second = tmp_path / "release-second"
+    release_second.write_text("go", encoding="utf-8")
+    script = """
+import sys
+import time
+from pathlib import Path
+from webvideo_to_data.experiment import _output_candidate, _serialized_output
+
+destination = _output_candidate(sys.argv[1])
+entered = Path(sys.argv[2])
+release = Path(sys.argv[3])
+ready = Path(sys.argv[4]) if len(sys.argv) > 4 else None
+if ready is not None:
+    ready.write_text("ready", encoding="utf-8")
+with _serialized_output(destination):
+    entered.write_text("entered", encoding="utf-8")
+    deadline = time.monotonic() + 10.0
+    while not release.exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("release sentinel was not created")
+        time.sleep(0.01)
+"""
+
+    first = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(physical_parent / "output"),
+            str(entered_first),
+            str(release_first),
+        ]
+    )
+    second: subprocess.Popen[bytes] | None = None
+    try:
+        deadline = time.monotonic() + 10.0
+        while not entered_first.exists():
+            assert first.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        second = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(alias_parent / "output"),
+                str(entered_second),
+                str(release_second),
+                str(ready_second),
+            ]
+        )
+        deadline = time.monotonic() + 10.0
+        while not ready_second.exists():
+            assert second.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        time.sleep(0.25)
+        assert not entered_second.exists()
+        release_first.write_text("go", encoding="utf-8")
+        first.wait(timeout=10.0)
+        second.wait(timeout=10.0)
+        assert first.returncode == 0
+        assert second.returncode == 0
+        assert entered_second.is_file()
+    finally:
+        release_first.touch()
+        if first.poll() is None:
+            first.kill()
+            first.wait(timeout=5.0)
+        if second is not None and second.poll() is None:
+            second.kill()
+            second.wait(timeout=5.0)
 
 
 def test_backup_cleanup_failure_marks_canonical_run_failed_without_action(

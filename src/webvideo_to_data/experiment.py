@@ -368,16 +368,26 @@ def _rejected_metrics(
 
 
 def _output_candidate(output_dir: str | Path) -> Path:
-    destination = Path(os.path.abspath(os.fspath(output_dir)))
-    if destination == Path(destination.anchor) or destination == Path.cwd().resolve():
+    lexical_destination = Path(os.path.abspath(os.fspath(output_dir)))
+    if lexical_destination == Path(lexical_destination.anchor):
         raise ValueError("output target is too broad for generated-run replacement")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    lexical_destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = lexical_destination.parent.resolve(strict=True) / lexical_destination.name
+    if destination.exists() and destination.samefile(Path.cwd()):
+        raise ValueError("output target is too broad for generated-run replacement")
     return destination
 
 
 @contextmanager
 def _serialized_output(destination: Path) -> Any:
-    lock_key = str(destination).casefold()
+    parent_stat = destination.parent.stat()
+    lock_key = ":".join(
+        (
+            str(int(parent_stat.st_dev)),
+            str(int(parent_stat.st_ino)),
+            os.path.normcase(destination.name),
+        )
+    )
     with _OUTPUT_LOCKS_GUARD:
         thread_lock = _OUTPUT_LOCKS.setdefault(lock_key, threading.Lock())
     lock_root = Path(tempfile.gettempdir()) / "webvideo_to_data_locks"
@@ -428,6 +438,19 @@ def _snapshot_files(directory: Path) -> tuple[tuple[str, int, str], ...]:
             raise ValueError(f"unrecognized files in generated run: {child.name}")
         signatures.append((child.name, child.stat().st_size, sha256_file(child)))
     return tuple(signatures)
+
+
+def _directory_snapshot(directory: Path) -> _RunSnapshot:
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("snapshot target must be a real directory")
+    before = directory.stat()
+    files = _snapshot_files(directory)
+    after = directory.stat()
+    before_identity = (int(before.st_dev), int(before.st_ino))
+    after_identity = (int(after.st_dev), int(after.st_ino))
+    if before_identity != after_identity:
+        raise ValueError("snapshot target changed during inspection")
+    return _RunSnapshot(directory_identity=after_identity, files=files)
 
 
 def _trusted_run_snapshot(directory: Path) -> _RunSnapshot:
@@ -490,11 +513,7 @@ def _trusted_run_snapshot(directory: Path) -> _RunSnapshot:
         raise ValueError("output target lacks a trusted generated-run marker")
     if status in ("failed", "rejected") and "rejection.json" not in actual_names:
         raise ValueError("output target lacks a trusted generated-run marker")
-    stat = directory.stat()
-    return _RunSnapshot(
-        directory_identity=(int(stat.st_dev), int(stat.st_ino)),
-        files=_snapshot_files(directory),
-    )
+    return _directory_snapshot(directory)
 
 
 def _validated_output_target(
@@ -542,11 +561,18 @@ def _publication_failure_metrics(
 def _mark_canonical_publication_failure(
     destination: Path,
     *,
+    expected: _RunSnapshot,
     variant: Variant,
     stage: str,
     error: Exception,
     started: float,
 ) -> dict[str, Any]:
+    try:
+        current = _directory_snapshot(destination)
+    except ValueError as validation_error:
+        raise ValueError("canonical output changed before failure reporting") from validation_error
+    if current != expected:
+        raise ValueError("canonical output changed before failure reporting")
     actions = destination / "actions.npz"
     if actions.exists():
         if actions.is_symlink() or not actions.is_file():
@@ -614,6 +640,7 @@ def _publish_staging(
     started: float,
 ) -> dict[str, Any]:
     _assert_destination_unchanged(destination, expected)
+    staged = _trusted_run_snapshot(staging)
     backup = destination.parent / f".{destination.name}.backup-{uuid4().hex}"
     if backup.parent != destination.parent or not backup.name.startswith(
         f".{destination.name}.backup-"
@@ -625,10 +652,27 @@ def _publish_staging(
             return metrics
         except Exception as error:
             if destination.exists():
+                try:
+                    current = _trusted_run_snapshot(destination)
+                except ValueError as validation_error:
+                    raise ValueError("output target changed during run") from validation_error
+                if current != staged:
+                    raise ValueError("output target changed during run") from error
+                return _mark_canonical_publication_failure(
+                    destination,
+                    expected=staged,
+                    variant=variant,
+                    stage="publication_swap",
+                    error=error,
+                    started=started,
+                )
+            if not staging.exists():
                 raise ValueError("output target changed during run") from error
             destination.mkdir()
+            empty = _directory_snapshot(destination)
             return _mark_canonical_publication_failure(
                 destination,
+                expected=empty,
                 variant=variant,
                 stage="publication_swap",
                 error=error,
@@ -639,14 +683,17 @@ def _publish_staging(
     except Exception as error:
         if destination.exists():
             _assert_destination_unchanged(destination, expected)
+            canonical = expected
         elif backup.exists():
             if _trusted_run_snapshot(backup) != expected:
                 raise ValueError("output target changed during run") from error
             destination.mkdir()
+            canonical = _directory_snapshot(destination)
         else:
             raise ValueError("output target changed during run") from error
         return _mark_canonical_publication_failure(
             destination,
+            expected=canonical,
             variant=variant,
             stage="publication_swap",
             error=error,
@@ -659,8 +706,10 @@ def _publish_staging(
         if destination.exists():
             raise ValueError("output target changed during run") from error
         destination.mkdir()
+        empty = _directory_snapshot(destination)
         return _mark_canonical_publication_failure(
             destination,
+            expected=empty,
             variant=variant,
             stage="publication_cleanup",
             error=error,
@@ -669,6 +718,32 @@ def _publish_staging(
     try:
         staging.replace(destination)
     except Exception as error:
+        if destination.exists():
+            try:
+                current = _trusted_run_snapshot(destination)
+            except ValueError as validation_error:
+                raise ValueError("output target changed during run") from validation_error
+            if current != staged:
+                raise ValueError("output target changed during run") from error
+            try:
+                _remove_trusted_backup(backup, expected)
+            except Exception as cleanup_error:
+                return _mark_canonical_publication_failure(
+                    destination,
+                    expected=staged,
+                    variant=variant,
+                    stage="publication_cleanup",
+                    error=cleanup_error,
+                    started=started,
+                )
+            return _mark_canonical_publication_failure(
+                destination,
+                expected=staged,
+                variant=variant,
+                stage="publication_swap",
+                error=error,
+                started=started,
+            )
         try:
             backup.replace(destination)
             if _trusted_run_snapshot(destination) != expected:
@@ -684,10 +759,13 @@ def _publish_staging(
                     raise ValueError(
                         "output target changed during rollback"
                     ) from validation_error
+                canonical = expected
             else:
                 destination.mkdir()
+                canonical = _directory_snapshot(destination)
             return _mark_canonical_publication_failure(
                 destination,
+                expected=canonical,
                 variant=variant,
                 stage="publication_swap",
                 error=error,
@@ -695,6 +773,7 @@ def _publish_staging(
             )
         return _mark_canonical_publication_failure(
             destination,
+            expected=expected,
             variant=variant,
             stage="publication_swap",
             error=error,
@@ -705,6 +784,7 @@ def _publish_staging(
     except Exception as error:
         return _mark_canonical_publication_failure(
             destination,
+            expected=staged,
             variant=variant,
             stage="publication_cleanup",
             error=error,
