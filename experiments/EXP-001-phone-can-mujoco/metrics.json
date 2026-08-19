@@ -1,0 +1,76 @@
+{
+  "experiment_id": "EXP-001-phone-can-mujoco",
+  "status": "completed_with_rejections",
+  "source": {
+    "path": "video/手机录制.mp4",
+    "sha256": "55e98463b8e270f4e7d87bda5d0ee73329880a96cf753fc2c78e1849f1c4ab17",
+    "width": 540,
+    "height": 960,
+    "fps": 30.0,
+    "frame_count": 210,
+    "duration_s": 7.019083
+  },
+  "locked_configuration": {
+    "roi_xywh": [374, 423, 104, 155],
+    "forward_backward_threshold_px": 1.5,
+    "minimum_live_points": 8,
+    "scene_x_bounds_m": [-0.15, 0.15],
+    "scene_y_bounds_m": [0.35, 0.65],
+    "b0_start_m": [0.12, 0.45, 0.04],
+    "b0_goal_m": [-0.05, 0.55, 0.13],
+    "random_seed": 19
+  },
+  "tracking": {
+    "valid_track_ratio": 1.0,
+    "phase_count": 4,
+    "phases": [
+      {"label": "approach", "start_frame": 0, "end_frame": 1, "start_s": 0.0, "end_s": 0.03333333333333333, "confidence": 0.015696066218308546},
+      {"label": "hold", "start_frame": 2, "end_frame": 156, "start_s": 0.06666666666666667, "end_s": 5.2, "confidence": 1.0},
+      {"label": "release", "start_frame": 157, "end_frame": 165, "start_s": 5.233333333333333, "end_s": 5.5, "confidence": 0.0},
+      {"label": "settle", "start_frame": 166, "end_frame": 209, "start_s": 5.533333333333333, "end_s": 6.966666666666667, "confidence": 0.0}
+    ]
+  },
+  "variants": {
+    "B0": {
+      "status": "rejected",
+      "reason": "physics_validation_failed",
+      "runtime_s": 4.909151100000599,
+      "simulation_mode": "physics_grasp",
+      "reachability_ratio": 0.0235655737704918,
+      "grasp_contact_frames": 0,
+      "maximum_lift_m": 0.0,
+      "maximum_can_height_gain_m": 0.0,
+      "target_error_m": 0.1972304327129863,
+      "target_height_error_m": 0.03296884566718554,
+      "support_contact_duration_s": 0.0,
+      "final_support_contact": false,
+      "finishes_inside_box": false,
+      "invalid_numerical_state": false,
+      "placed_successfully": false,
+      "action_exported": false
+    },
+    "B1": {
+      "status": "rejected",
+      "reason": "kinematic_replay_not_action",
+      "runtime_s": 9.63741779999691,
+      "simulation_mode": "kinematic_replay",
+      "reachability_ratio": 0.0969085909507541,
+      "grasp_contact_frames": 9761,
+      "maximum_lift_m": 0.0,
+      "maximum_can_height_gain_m": 0.185,
+      "target_error_m": 0.0599163907205696,
+      "target_height_error_m": 0.193,
+      "support_contact_duration_s": 0.0,
+      "final_support_contact": false,
+      "finishes_inside_box": false,
+      "invalid_numerical_state": false,
+      "placed_successfully": false,
+      "action_exported": false
+    },
+    "B2": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.021074799995403737},
+    "B3": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.018790699992678128},
+    "B4": {"status": "not_run", "reason": "metric_depth_not_available", "runtime_s": 0.01975510000193026}
+  },
+  "artifact_root": "artifacts/EXP-001",
+  "binary_artifacts_ignored": true
+}

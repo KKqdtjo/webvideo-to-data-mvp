@@ -18,6 +18,12 @@
 
 ## 首轮实验
 
+### EXP-001 实测状态
+
+已用锁定 ROI `[374,423,104,155]` 和真实 `video/手机录制.mp4` 完成端到端运行。B0 的 `physics_grasp` reachability 为 0.0235656，无双指接触、lift=0、未放置；B1 仅为 `kinematic_replay` 诊断，也未放置。两者均写 rejection 且不导出 `actions.npz`。B2–B4 因 `metric_depth_not_available` 记录为 `not_run`，没有复制 B1 指标。
+
+完整实测报告与机器指标见 [`experiments/EXP-001-phone-can-mujoco/report.md`](experiments/EXP-001-phone-can-mujoco/report.md) 和 [`metrics.json`](experiments/EXP-001-phone-can-mujoco/metrics.json)。可再生成的媒体位于 ignored `artifacts/EXP-001/`。
+
 ### 输入视频
 
 主样本：[`video/手机录制.mp4`](video/手机录制.mp4)

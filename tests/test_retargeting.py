@@ -91,6 +91,24 @@ def test_b0_reference_has_all_phases_fixed_poses_and_bounded_speed() -> None:
     assert float(np.max(speed)) <= 0.35 + 1e-9
 
 
+def test_b0_manual_baseline_is_independent_of_video_track_length() -> None:
+    """Catch a fixed B0 baseline silently changing with the source frame count."""
+
+    short_trajectory, phases = _trajectory_and_phases()
+    long_trajectory = Trajectory2D(
+        timestamps_s=np.arange(210) / 30.0,
+        centers_px=np.zeros((210, 2)),
+        confidence=np.ones(210),
+    )
+
+    short_reference = build_pick_place_reference(short_trajectory, phases, variant="B0")
+    long_reference = build_pick_place_reference(long_trajectory, phases, variant="B0")
+
+    np.testing.assert_array_equal(long_reference.timestamps_s, short_reference.timestamps_s)
+    np.testing.assert_allclose(long_reference.ee_positions, short_reference.ee_positions)
+    assert long_reference.phase == short_reference.phase
+
+
 def test_b1_maps_stable_endpoints_and_preserves_tracked_path_shape() -> None:
     trajectory, phases = _trajectory_and_phases()
 

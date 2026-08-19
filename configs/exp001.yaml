@@ -1,0 +1,21 @@
+experiment_id: EXP-001-phone-can-mujoco
+source:
+  path: video/手机录制.mp4
+  sha256: 55E98463B8E270F4E7D87BDA5D0EE73329880A96CF753FC2C78E1849F1C4AB17
+  fps: 30.0
+  roi_xywh: [374, 423, 104, 155]
+tracking:
+  forward_backward_threshold_px: 1.5
+  minimum_live_points: 8
+  minimum_valid_ratio: 0.5
+scene:
+  x_bounds_m: [-0.15, 0.15]
+  y_bounds_m: [0.35, 0.65]
+  b0_start_m: [0.12, 0.45, 0.04]
+  b0_goal_m: [-0.05, 0.55, 0.13]
+simulation:
+  b0_mode: physics_grasp
+  b1_mode: kinematic_replay
+  render_size: [320, 240]
+  render_every: 50
+random_seed: 19

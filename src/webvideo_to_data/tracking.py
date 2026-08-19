@@ -49,7 +49,11 @@ def _inside_frame(roi: np.ndarray, frame_width: int, frame_height: int) -> bool:
 
 
 def track_roi_lk(
-    video_path: str | Path, initial_roi: Sequence[float]
+    video_path: str | Path,
+    initial_roi: Sequence[float],
+    *,
+    forward_backward_threshold_px: float = 1.5,
+    minimum_live_points: int = 8,
 ) -> Trajectory2D:
     """Track an object's ROI center using forward-backward Lucas-Kanade flow.
 
@@ -60,6 +64,10 @@ def track_roi_lk(
     roi = np.asarray(initial_roi, dtype=float)
     if roi.shape != (4,):
         raise ValueError("initial_roi must have shape [x, y, w, h]")
+    if forward_backward_threshold_px < 0.0:
+        raise ValueError("forward_backward_threshold_px must be nonnegative")
+    if minimum_live_points <= 0:
+        raise ValueError("minimum_live_points must be positive")
 
     capture = cv2.VideoCapture(str(video_path))
     try:
@@ -115,7 +123,9 @@ def track_roi_lk(
                     backward_error = np.linalg.norm(
                         points.reshape(-1, 2) - backward_points.reshape(-1, 2), axis=1
                     )
-                    valid_mask = forward_valid & backward_valid & (backward_error < 1.5)
+                    valid_mask = forward_valid & backward_valid & (
+                        backward_error < forward_backward_threshold_px
+                    )
                     valid_previous = points[valid_mask]
                     valid_next = next_points[valid_mask]
                     forward_fraction = (
@@ -135,7 +145,10 @@ def track_roi_lk(
             else:
                 points = np.empty((0, 1, 2), dtype=np.float32)
 
-            if _inside_frame(roi, frame_width, frame_height) and len(points) < 8:
+            if (
+                _inside_frame(roi, frame_width, frame_height)
+                and len(points) < minimum_live_points
+            ):
                 detected = _features_in_roi(current_gray, roi)
                 if len(detected):
                     points = detected

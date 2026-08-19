@@ -137,7 +137,7 @@ def build_pick_place_reference(
     if variant == "B0":
         start_xy = np.array([0.12, 0.45])
         goal_xy = np.array([-0.05, 0.55])
-        tracked_xy = np.linspace(start_xy, goal_xy, max(2, len(trajectory.centers_px)))
+        tracked_xy = np.linspace(start_xy, goal_xy, 5)
     else:
         first_interval = min(phases, key=lambda item: item.start_frame)
         last_interval = max(phases, key=lambda item: item.end_frame)
