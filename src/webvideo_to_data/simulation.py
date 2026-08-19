@@ -13,6 +13,7 @@ from .retargeting import RobotReference
 
 ReplayMode = Literal["kinematic_replay", "physics_grasp"]
 _DEFAULT_MODEL_PATH = Path(__file__).with_name("assets") / "panda_pick_place.xml"
+_MINIMUM_GRASP_CONTACT_FRAMES = 3
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,33 @@ class SimulationResult:
     ik_orientation_error_rad: NDArray[np.float64]
     ik_converged: NDArray[np.bool_]
     reachability_ratio: float
+
+
+@dataclass
+class _GraspLiftTracker:
+    initial_can_z: float
+    minimum_contact_frames: int = _MINIMUM_GRASP_CONTACT_FRAMES
+    contact_streak: int = 0
+    maximum_lift_m: float = 0.0
+
+    def observe(
+        self,
+        phase: str,
+        gripper_closed: bool,
+        finger_contacts: tuple[bool, bool],
+        *,
+        can_z: float,
+    ) -> None:
+        qualifies = (
+            phase in ("lift", "transport")
+            and gripper_closed
+            and all(finger_contacts)
+        )
+        self.contact_streak = self.contact_streak + 1 if qualifies else 0
+        if self.contact_streak >= self.minimum_contact_frames:
+            self.maximum_lift_m = max(
+                self.maximum_lift_m, can_z - self.initial_can_z
+            )
 
 
 def _named_id(model: mujoco.MjModel, object_type: mujoco.mjtObj, name: str) -> int:
@@ -134,14 +162,15 @@ def _has_support_contact(
     )
 
 
-def _has_grasp_contact(
+def _finger_contact_state(
     data: mujoco.MjData, can_geom_id: int, finger_geom_ids: list[int]
-) -> bool:
-    required_pairs = [{can_geom_id, finger_id} for finger_id in finger_geom_ids]
-    return any(
+) -> tuple[bool, bool]:
+    contact_pairs = [
         {int(data.contact[index].geom1), int(data.contact[index].geom2)}
-        in required_pairs
         for index in range(data.ncon)
+    ]
+    return tuple(
+        {can_geom_id, finger_id} in contact_pairs for finger_id in finger_geom_ids
     )
 
 
@@ -251,7 +280,7 @@ def run_mujoco_replay(
     current_support_duration = 0.0
     release_started = False
     final_support_contact = False
-    qualifying_lift = 0.0
+    grasp_lift_tracker = _GraspLiftTracker(initial_can_z=initial_can_z)
     frames: list[NDArray[np.uint8]] = []
 
     render_width, render_height = render_size
@@ -289,22 +318,20 @@ def run_mujoco_replay(
             can_pose_history[step, :3] = data.xpos[can_body_id]
             can_pose_history[step, 3:] = data.xquat[can_body_id]
             contact_history[step] = data.ncon
-            grasp_contact_history[step] = _has_grasp_contact(
+            finger_contacts = _finger_contact_state(
                 data, can_geom_id, finger_geom_ids
             )
+            grasp_contact_history[step] = all(finger_contacts)
             gripper_width_history[step] = sum(
                 data.qpos[address] for address in finger_qpos_addresses
             )
             gripper_closed_history[step] = gripper_width_history[step] <= 0.01
-            if (
-                reference.phase[reference_index] in ("lift", "transport")
-                and gripper_closed_history[step]
-                and grasp_contact_history[step]
-            ):
-                qualifying_lift = max(
-                    qualifying_lift,
-                    float(data.xpos[can_body_id, 2] - initial_can_z),
-                )
+            grasp_lift_tracker.observe(
+                reference.phase[reference_index],
+                bool(gripper_closed_history[step]),
+                finger_contacts,
+                can_z=float(data.xpos[can_body_id, 2]),
+            )
             if reference.phase[reference_index] == "open":
                 release_started = True
             if release_started:
@@ -357,7 +384,7 @@ def run_mujoco_replay(
     )
     placed_successfully = _placement_success(
         mode=mode,
-        qualifying_lift_m=qualifying_lift,
+        qualifying_lift_m=grasp_lift_tracker.maximum_lift_m,
         finishes_inside_box=finishes_inside_box,
         support_contact_duration_s=current_support_duration,
         final_support_contact=final_support_contact,
@@ -381,7 +408,7 @@ def run_mujoco_replay(
         rendered_rgb=rendered,
         invalid_numerical_state=invalid,
         placed_successfully=placed_successfully,
-        maximum_lift_m=qualifying_lift,
+        maximum_lift_m=grasp_lift_tracker.maximum_lift_m,
         maximum_can_height_gain_m=maximum_can_height_gain,
         grasp_contact=grasp_contact_history,
         gripper_width_m=gripper_width_history,

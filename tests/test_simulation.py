@@ -2,10 +2,16 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
+import pytest
 
 from webvideo_to_data.retargeting import RobotReference, build_pick_place_reference
 from webvideo_to_data.schema import PhaseInterval, Trajectory2D
-from webvideo_to_data.simulation import _placement_success, run_mujoco_replay
+from webvideo_to_data.simulation import (
+    _GraspLiftTracker,
+    _finger_contact_state,
+    _placement_success,
+    run_mujoco_replay,
+)
 
 
 ASSET_PATH = (
@@ -15,6 +21,24 @@ ASSET_PATH = (
     / "assets"
     / "panda_pick_place.xml"
 )
+
+GRASP_CONTACT_FIXTURE_XML = """
+<mujoco model="grasp_contact_fixture">
+  <option gravity="0 0 0"/>
+  <worldbody>
+    <body name="can" pos="0 0 0.10">
+      <freejoint name="can_free"/>
+      <geom name="can_geom" type="cylinder" size="0.025 0.045" mass="0.1"/>
+    </body>
+    <body name="left_finger" pos="0 0.02 0.10">
+      <geom name="left_finger_geom" type="box" size="0.012 0.008 0.045"/>
+    </body>
+    <body name="right_finger" pos="0 -0.02 0.10">
+      <geom name="right_finger_geom" type="box" size="0.012 0.008 0.045"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
 
 
 def _stationary_reference(mode_variant: str = "B0") -> RobotReference:
@@ -57,6 +81,22 @@ def _b0_reference() -> RobotReference:
         PhaseInterval("settle", 3, 4, 0.9, ("object_settled",)),
     )
     return build_pick_place_reference(trajectory, phases, variant="B0")
+
+
+def _real_finger_contacts(can_y: float) -> tuple[bool, bool]:
+    model = mujoco.MjModel.from_xml_string(GRASP_CONTACT_FIXTURE_XML)
+    data = mujoco.MjData(model)
+    can_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "can_free")
+    can_qpos_address = model.jnt_qposadr[can_joint_id]
+    data.qpos[can_qpos_address : can_qpos_address + 3] = [0.0, can_y, 0.10]
+    data.qpos[can_qpos_address + 3 : can_qpos_address + 7] = [1.0, 0.0, 0.0, 0.0]
+    mujoco.mj_forward(model, data)
+    can_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "can_geom")
+    finger_geom_ids = [
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        for name in ("left_finger_geom", "right_finger_geom")
+    ]
+    return _finger_contact_state(data, can_geom_id, finger_geom_ids)
 
 
 def test_headless_mujoco_scene_and_runner_smoke() -> None:
@@ -174,6 +214,37 @@ def test_gripper_closed_evidence_uses_actual_finger_state() -> None:
 
     assert result.gripper_width_m[0] > 0.07
     assert not result.gripper_closed[0]
+
+
+def test_single_finger_or_two_frame_contact_cannot_qualify_lift() -> None:
+    single_finger = _real_finger_contacts(can_y=0.03)
+    both_fingers = _real_finger_contacts(can_y=0.0)
+    assert sum(single_finger) == 1
+    assert both_fingers == (True, True)
+    tracker = _GraspLiftTracker(initial_can_z=0.10)
+
+    tracker.observe("lift", True, single_finger, can_z=0.14)
+    tracker.observe("lift", True, both_fingers, can_z=0.15)
+    tracker.observe("transport", True, both_fingers, can_z=0.16)
+
+    assert tracker.maximum_lift_m == 0.0
+
+
+def test_three_frame_double_finger_contact_qualifies_and_loss_resets_streak() -> None:
+    both_fingers = _real_finger_contacts(can_y=0.0)
+    single_finger = _real_finger_contacts(can_y=0.03)
+    tracker = _GraspLiftTracker(initial_can_z=0.10)
+
+    tracker.observe("lift", True, both_fingers, can_z=0.11)
+    tracker.observe("lift", True, both_fingers, can_z=0.12)
+    tracker.observe("lift", True, single_finger, can_z=0.20)
+    tracker.observe("transport", True, both_fingers, can_z=0.13)
+    tracker.observe("transport", True, both_fingers, can_z=0.14)
+    assert tracker.maximum_lift_m == 0.0
+
+    tracker.observe("transport", True, both_fingers, can_z=0.15)
+
+    assert tracker.maximum_lift_m == pytest.approx(0.05)
 
 
 def test_support_duration_resets_if_contact_is_lost_after_release() -> None:
