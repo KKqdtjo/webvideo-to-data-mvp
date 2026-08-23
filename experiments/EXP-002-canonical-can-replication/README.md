@@ -8,10 +8,14 @@
 - relative run path：`EXP-002-canonical-can-replication/runs/20260823T083932722546Z-aac0791e-aa8b`
 - generator commit：`bf6615c1bf15f476ca6c51e9f20bbda69d6549a7`，dirty `false`
 - requested variants：`B0`, `B1`
-- suite status：`recorded / suite_recorded`
+- suite status：`recorded`
 - action contract：`actions_exported=0`，没有 `actions.npz`
 
 这是换用另一段私有录制素材的 replication，不是 EXP-001 的同源重跑。公开记录不含源素材的标识、文件名、本地路径、内容哈希或画面。
+
+## 证据来源
+
+`different_source` 是运行前确定的实验设计，不是从结果 JSON 反推的标签。run ID、terminal、B0/B1 数值和公共 GIF 字段来自公开 safe summary。suite、B0 和 B1 的 verify、媒体解码与隐私审计结论来自 reviewer/controller 对 immutable suite 的独立 strict CLI 复跑。这些来源在 [`metrics.json`](metrics.json) 的 `evidence_basis` 中分开记录。
 
 ## 结果
 

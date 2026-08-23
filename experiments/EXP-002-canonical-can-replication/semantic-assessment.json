@@ -5,6 +5,26 @@
   "relative_run_path": "EXP-002-canonical-can-replication/runs/20260823T083932722546Z-aac0791e-aa8b",
   "assessment_type": "verified_metric_boundary",
   "assessment_scope": "different_source_b1_semantic_boundary",
+  "evidence_basis": {
+    "experiment_design_recorded_before_run": [
+      "assessment_scope"
+    ],
+    "metrics_projected_from_public_safe_summary": [
+      "logical_run_id",
+      "terminal",
+      "tracking_assessment"
+    ],
+    "public_release_record": [
+      "schema_version",
+      "experiment_id",
+      "relative_run_path",
+      "assessment_type",
+      "variant",
+      "ground_truth",
+      "conclusion",
+      "publication"
+    ]
+  },
   "variant": "B1",
   "terminal": {
     "status": "rejected",

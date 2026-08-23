@@ -2,16 +2,20 @@
 
 ## 摘要
 
-实验用 C1 `bf6615c1bf15f476ca6c51e9f20bbda69d6549a7` 和另一段私有录制素材重新执行严格 B0+B1 流程。preflight 9 项全部通过，suite terminal 为 `recorded`。B0 固定评测 `0/30`，B0/B1 terminal 均为 rejected，action 数为 0。
+实验用 C1 `bf6615c1bf15f476ca6c51e9f20bbda69d6549a7` 和另一段私有录制素材重新执行严格 B0+B1 流程。suite terminal 为 `recorded`。B0 固定评测 `0/30`，B0/B1 terminal 均为 rejected，action 数为 0。
 
 这次实验回答的是“同一实现换源后能否产出通过门禁的数据”。它不是 EXP-001 同一素材上的回归测试，也没有包含算法修改。跨实验的数值差异混合了输入变化，不能解释成算法进步或退步。
+
+## 证据来源
+
+`different_source` 是执行前写入的实验设计。公开 safe summary 提供 run ID、suite status、B0/B1 指标、action 数和 GIF 字段。verify、媒体解码与隐私审计结论由 reviewer/controller 使用 immutable suite 独立复跑 strict CLI 得到，不属于 safe-summary projection。
 
 ## Suite aggregate
 
 | 字段 | 值 |
 | --- | --- |
 | logical run ID | `20260823T083932722546Z-aac0791e-aa8b` |
-| status / reason | `recorded / suite_recorded` |
+| status | `recorded` |
 | requested variants | `B0`, `B1` |
 | B0 fixed benchmark | `failed`, `0/30` |
 | B0 terminal | `rejected / physics_validation_failed` |
@@ -57,7 +61,7 @@ LK 指标的 scope 是 `point_availability_not_semantic_accuracy`。semantic acc
 
 ## 验证与媒体
 
-suite、B0 和 B1 分别通过 `--decode-media --privacy-audit` 验证；解码媒体数为 8、1、5。基于 verifier 捕获字节执行的 14 项 manifest、hash、size 和分类检查全部通过。递归检查确认 `actions.npz` 数量为 0。
+以下结论来自 reviewer/controller 对 immutable suite 的 strict CLI 复跑，不是 safe-summary projection：suite、B0 和 B1 分别通过 `--decode-media --privacy-audit` 验证，解码媒体数为 8、1、5。verifier 捕获字节与 manifest 的 hash、size 和分类一致；递归检查确认 `actions.npz` 数量为 0。
 
 | Public preview | SHA-256 | Probe/decode |
 | --- | --- | --- |

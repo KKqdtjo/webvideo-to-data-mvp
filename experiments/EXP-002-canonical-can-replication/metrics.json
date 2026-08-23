@@ -4,7 +4,62 @@
   "logical_run_id": "20260823T083932722546Z-aac0791e-aa8b",
   "relative_run_path": "EXP-002-canonical-can-replication/runs/20260823T083932722546Z-aac0791e-aa8b",
   "status": "recorded",
-  "reason": "suite_recorded",
+  "evidence_basis": {
+    "experiment_design_recorded_before_run": [
+      "replication",
+      "variants.B2",
+      "variants.B3",
+      "variants.B4"
+    ],
+    "metrics_projected_from_public_safe_summary": [
+      "logical_run_id",
+      "status",
+      "requested_variants",
+      "generator",
+      "b0_fixed_benchmark.status",
+      "b0_fixed_benchmark.rollouts",
+      "b0_fixed_benchmark.successes",
+      "variants.B0",
+      "variants.B1",
+      "actions.actions_npz_count",
+      "public_media.B0.sha256",
+      "public_media.B0.size_bytes",
+      "public_media.B0.media_role",
+      "public_media.B0.contains_private_source_frames",
+      "public_media.B0.width",
+      "public_media.B0.height",
+      "public_media.B0.frame_count",
+      "public_media.B0.fps",
+      "public_media.B0.duration_s",
+      "public_media.B1.sha256",
+      "public_media.B1.size_bytes",
+      "public_media.B1.media_role",
+      "public_media.B1.contains_private_source_frames",
+      "public_media.B1.width",
+      "public_media.B1.height",
+      "public_media.B1.frame_count",
+      "public_media.B1.fps",
+      "public_media.B1.duration_s"
+    ],
+    "verification_reproduced_by_strict_cli_from_immutable_suite": [
+      "verification",
+      "actions.actions_exported",
+      "public_media.B0.full_decode",
+      "public_media.B0.privacy_audit",
+      "public_media.B0.reused_existing_identical_file",
+      "public_media.B1.full_decode",
+      "public_media.B1.privacy_audit",
+      "public_media.B1.reused_existing_identical_file"
+    ],
+    "public_release_record": [
+      "schema_version",
+      "experiment_id",
+      "relative_run_path",
+      "source",
+      "public_media.B0.repository_path",
+      "public_media.B1.repository_path"
+    ]
+  },
   "replication": {
     "type": "different_source",
     "reference_experiment": "EXP-001-phone-can-mujoco",
@@ -28,8 +83,7 @@
   "b0_fixed_benchmark": {
     "status": "failed",
     "rollouts": 30,
-    "successes": 0,
-    "passed": false
+    "successes": 0
   },
   "variants": {
     "B0": {
@@ -130,14 +184,12 @@
     }
   },
   "verification": {
-    "strict_preflight_checks": 9,
-    "strict_preflight_failures": 0,
+    "derivation": "verification_reproduced_by_strict_cli_from_immutable_suite",
+    "method": "strict_cli_verify_decode_media_privacy_audit",
     "suite_verified": true,
     "b0_verified": true,
     "b1_verified": true,
     "decode_media": "passed",
-    "privacy_audit": "passed",
-    "captured_bytes_checks": 14,
-    "captured_bytes_failures": 0
+    "privacy_audit": "passed"
   }
 }
