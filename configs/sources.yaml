@@ -1,0 +1,12 @@
+schema_version: 1
+sources:
+  - id: exp001-phone-can-private
+    path: source-placeholder.mp4
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    origin: user_recorded
+    captured_on: null
+    captured_on_status: not_recorded
+    license: private_not_redistributable
+    publishable: false
+    privacy_review: local_only
+    access: local file required; not distributed

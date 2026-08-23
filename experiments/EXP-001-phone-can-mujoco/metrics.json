@@ -1,0 +1,124 @@
+{
+  "schema_version": 2,
+  "experiment_id": "EXP-001-phone-can-mujoco",
+  "logical_run_id": "20260822T091027937019Z-93982cd7-b106",
+  "relative_run_path": "EXP-001-phone-can-mujoco/runs/20260822T091027937019Z-93982cd7-b106",
+  "status": "recorded",
+  "reason": "suite_recorded",
+  "requested_variants": ["B0", "B1"],
+  "generator": {
+    "git_commit": "0c6a64c4028f0f5dce55dfcec86be7d7b14b526a",
+    "git_dirty": false,
+    "python": "3.11.7",
+    "config_sha256": "93982cd7bdf429ccd18f1cb6af52d30a53ba946134626321ead8d61f08f60ccd"
+  },
+  "source": {
+    "id": "exp001-phone-can-private",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256_published": false,
+    "local_path_published": false,
+    "private_frames_published": false
+  },
+  "b0_fixed_benchmark": {
+    "seeds": {"first": 19, "last": 48, "count": 30},
+    "rollouts": 30,
+    "successes": 0,
+    "passed": false,
+    "reason": "illegal_contact_observed",
+    "wilson_95_low": 0.0,
+    "wilson_95_high": 0.11351339317396876,
+    "total_forbidden_contacts": 18660,
+    "maximum_forbidden_penetration_m": 0.01252896243320321,
+    "yaw_perturbation_observability": "geometrically_unobservable_for_axisymmetric_can"
+  },
+  "variants": {
+    "B0": {
+      "status": "rejected",
+      "reason": "physics_validation_failed",
+      "runtime_s": 3.4659598000007463,
+      "simulation_mode": "physics_grasp",
+      "source_accessed": false,
+      "execution_tracking_ratio": 0.13316892725030827,
+      "bilateral_close_contact_duration_s": 0.052,
+      "bilateral_lift_contact_duration_s": 0.14,
+      "maximum_lift_m": 0.22670993268105838,
+      "target_error_m": 0.004783042194876456,
+      "forbidden_contact_count": 161,
+      "maximum_forbidden_penetration_m": 0.0045891964780619895,
+      "joint_position_violation_count": 0,
+      "joint_velocity_violation_count": 37,
+      "joint_acceleration_violation_count": 1201,
+      "collision_validation": "failed",
+      "physics_validation": "failed",
+      "placed_successfully": false,
+      "action_export_eligible": false,
+      "action_exported": false
+    },
+    "B1": {
+      "status": "rejected",
+      "reason": "kinematic_replay_not_action",
+      "runtime_s": 17.69941590000053,
+      "simulation_mode": "kinematic_replay",
+      "reachability_ratio": 0.0969085909507541,
+      "lk_point_availability_ratio": 1.0,
+      "lk_metric_scope": "point_availability_not_semantic_accuracy",
+      "semantic_accuracy_status": "not_measured",
+      "perception_status": "degraded",
+      "perception_warnings": [
+        "zero_confidence_phase:release",
+        "zero_confidence_phase:settle"
+      ],
+      "maximum_can_height_gain_m": 0.185,
+      "maximum_lift_m": 0.0,
+      "target_error_m": 0.0599163907205696,
+      "target_height_error_m": 0.193,
+      "support_contact_duration_s": 0.0,
+      "collision_validation": "not_applicable_kinematic",
+      "physics_validation": "not_applicable_kinematic",
+      "placed_successfully": false,
+      "action_export_eligible": false,
+      "action_exported": false
+    },
+    "B2": {"status": "not_requested", "metrics_copied_from_b1": false},
+    "B3": {"status": "not_requested", "metrics_copied_from_b1": false},
+    "B4": {"status": "not_requested", "metrics_copied_from_b1": false}
+  },
+  "actions": {
+    "actions_exported": 0,
+    "actions_npz_count": 0
+  },
+  "public_media": {
+    "B0": {
+      "media_role": "public_simulation_preview",
+      "contains_private_source_frames": false,
+      "sha256": "9730164ea6ae93904d352592d0209bad50d01b0cf86fe93ce88db65fd2efb395",
+      "size_bytes": 10322575,
+      "width": 960,
+      "height": 720,
+      "fps": 8.333333333333334,
+      "frame_count": 78,
+      "duration_s": 9.36,
+      "full_decode": "passed",
+      "privacy_audit": "passed"
+    },
+    "B1": {
+      "media_role": "public_simulation_preview",
+      "contains_private_source_frames": false,
+      "sha256": "918f236e6268ba811efcef7a65499ae170ab457cc38e990daa95101d8577fa11",
+      "size_bytes": 11811665,
+      "width": 960,
+      "height": 720,
+      "fps": 8.333333333333334,
+      "frame_count": 96,
+      "duration_s": 11.52,
+      "full_decode": "passed",
+      "privacy_audit": "passed"
+    }
+  },
+  "verification": {
+    "suite_exact_cli_exit_code": 0,
+    "b1_exact_cli_exit_code": 0,
+    "suite_privacy_findings": 0,
+    "public_copy_privacy_findings": 0
+  }
+}
