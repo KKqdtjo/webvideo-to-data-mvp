@@ -1245,6 +1245,50 @@ def test_stable_posix_parent_normalizes_not_a_directory_race(
     assert open_calls == 2
 
 
+def test_stable_posix_parent_retries_after_concurrent_directory_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = os.open
+    relative_open_calls = 0
+    mkdir_calls = 0
+
+    def open_during_concurrent_creation(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal relative_open_calls
+        if dir_fd is None:
+            return original_open(os.devnull, os.O_RDONLY)
+        relative_open_calls += 1
+        if relative_open_calls == 1:
+            raise FileNotFoundError("output parent is not present yet")
+        return original_open(os.devnull, os.O_RDONLY)
+
+    def directory_created_by_competitor(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal mkdir_calls
+        mkdir_calls += 1
+        raise FileExistsError("another process created the directory")
+
+    monkeypatch.setattr(os, "O_DIRECTORY", 0, raising=False)
+    monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(os, "open", open_during_concurrent_creation)
+    monkeypatch.setattr(os, "mkdir", directory_created_by_competitor)
+
+    with dashboard_module._stable_posix_parent(Path("/publication/public.gif")):
+        pass
+
+    assert relative_open_calls == 2
+    assert mkdir_calls == 1
+
+
 def test_public_preview_copy_rejects_parent_swapped_to_junction_after_path_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

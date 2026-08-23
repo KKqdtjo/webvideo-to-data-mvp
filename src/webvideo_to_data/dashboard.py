@@ -400,7 +400,10 @@ def _stable_posix_parent(path: Path) -> Any:
                 try:
                     child_fd = os.open(part, flags, dir_fd=directory_fd)
                 except FileNotFoundError:
-                    os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+                    except FileExistsError:
+                        pass
                     child_fd = os.open(part, flags, dir_fd=directory_fd)
             except NotADirectoryError as error:
                 raise ValueError(
