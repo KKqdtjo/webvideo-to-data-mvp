@@ -23,5 +23,8 @@ Terminal vocabulary：
 | --- | --- | --- |
 | EXP-000 | recorded | 本地素材与执行环境的只读盘点 |
 | [EXP-001](EXP-001-phone-can-mujoco/) | recorded, no actions | fresh B0 固定物理基线 `0/30`，B0/B1 均 rejected，B2–B4 在本次 narrower suite 未请求，action 数为 0 |
+| [EXP-002](EXP-002-canonical-can-replication/) | recorded, no actions | different-source replication；B0 `0/30`，B0/B1 均 rejected，action 数为 0 |
 
 EXP-001 的公开动画是 simulation-only rejected diagnostics。`recorded`、可解码媒体或 kinematic replay 都不能替代物理成功。
+
+EXP-002 换用了另一段私有录制素材，generator 仍是 C1。它不是 EXP-001 的同源重跑，跨实验数值变化不能归因于算法。EXP-002 重生成的公共 GIF 与现有 EXP-001 文件逐字节一致，因此只复用链接，没有复制媒体文件。

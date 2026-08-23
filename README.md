@@ -1,6 +1,6 @@
 # WebVideo to Data
 
-把短视频转换为可检查的机器人参考与仿真证据。当前 Phase 2A 的结论是“可信拒绝”，不是可用 action data：固定物理基线 30 次全部失败，B1 也只是运动学诊断，整个 fresh suite 导出 action 数为 0。
+把短视频转换为可检查的机器人参考与仿真证据。Phase 2A 目前有两个 verified suite，结论都是“可信拒绝”，不是可用 action data。EXP-001 与换源复现实验 EXP-002 的固定物理基线均为 `0/30`；B1 仍是运动学诊断，两个 suite 的 action 数都为 0。
 
 ## Python 3.11 快速开始
 
@@ -55,9 +55,17 @@ B0 的单次 fresh child 同样失败：execution tracking ratio 为 `0.13316892
 
 B1 的 `lk_point_availability_ratio=1.0` 只表示点可用性，不表示语义正确。人工视觉 QA 已观察到后段 hand takeover drift；semantic accuracy 仍是 `not_measured`。它的 height gain `0.185 m` 来自 kinematic object-pose override，`maximum_lift_m=0.0`，不能称为物理抓取。
 
+## EXP-002 换源复现
+
+EXP-002 使用另一段私有录制素材和同一 C1 generator `bf6615c1bf15f476ca6c51e9f20bbda69d6549a7`。它是 different-source replication，不是 EXP-001 的同源重跑。
+
+fresh verified suite `20260823T083932722546Z-aac0791e-aa8b` 为 `recorded`。B0 固定评测仍是 `0/30`，child 为 `rejected / physics_validation_failed`；B1 为 `rejected / kinematic_replay_not_action`，release 与 settle 的 confidence 为 0。`lk_point_availability_ratio=1.0` 的 scope 仍只是 `point_availability_not_semantic_accuracy`，semantic accuracy 没有测量。suite 内没有 `actions.npz`。
+
+两个实验的输入不同，不能把 runtime、reachability 或误差的变化归因于算法。EXP-002 没有算法改动，也没有产生 action。
+
 ## 公开的 simulation-only 诊断
 
-两张动画只含 MuJoCo 场景，由 fresh suite 中满足 `media_role=public_simulation_preview` 且 `contains_private_source_frames=false` 的 manifest entry 通过 guarded copy API 发布。每帧保留 rejection、warning 和 simulation clock；原始视频、tracking/source panel、run-local dashboard 与 release MP4 均未发布。
+两张动画只含 MuJoCo 场景，由 fresh suite 中满足 `media_role=public_simulation_preview` 且 `contains_private_source_frames=false` 的 manifest entry 通过 guarded copy API 发布。EXP-002 也从 C1 重新生成了两张 GIF；它们与现有文件逐字节一致，因此复用下面的链接，不重复提交约 22 MB。每帧保留 rejection、warning 和 simulation clock；原始视频、tracking/source panel、run-local dashboard 与 release MP4 均未发布。
 
 ### B0：rejected manual physics baseline
 
@@ -82,7 +90,7 @@ video evidence
 
 二维 tracking availability、IK reachability、运动学回放和漂亮动画都不是物理 action 的替代品。只有通过配置锁定、来源校验、动力学、碰撞与接触门禁、manifest 验证及隐私审计的 episode 才可能进入 action-bearing 数据集。失败样本保留为诊断证据，但不会静默降级门槛。
 
-详细方法见 [`docs/method.md`](docs/method.md)，机器可读结果见 [`experiments/EXP-001-phone-can-mujoco/metrics.json`](experiments/EXP-001-phone-can-mujoco/metrics.json)，实验叙述见 [`report.md`](experiments/EXP-001-phone-can-mujoco/report.md)。
+详细方法见 [`docs/method.md`](docs/method.md)。EXP-001 的机器可读结果在 [`metrics.json`](experiments/EXP-001-phone-can-mujoco/metrics.json)，换源复现记录在 [`EXP-002`](experiments/EXP-002-canonical-can-replication/)。
 
 ## Phase 2B 建议
 

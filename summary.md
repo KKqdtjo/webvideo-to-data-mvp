@@ -138,6 +138,20 @@ robomimic 把机器人模仿学习数据、视觉与低维 observation encoder�
 
 simulation-only GIF 是失败诊断，不是“已经把视频转成可训练 action”的演示。这条边界应继续保留。
 
+## EXP-002 换源复现
+
+EXP-002 使用另一段私有录制素材，在 C1 `bf6615c1bf15f476ca6c51e9f20bbda69d6549a7` 上重新执行 B0+B1。fresh verified suite `20260823T083932722546Z-aac0791e-aa8b` 为 `recorded`，结果如下：
+
+- B0 fixed benchmark 为 `0/30`，child 是 `rejected / physics_validation_failed`；
+- B1 是 `rejected / kinematic_replay_not_action`；
+- B1 的 LK availability 为 `1.0`，只表示 point availability，semantic accuracy 没有测量；
+- release 与 settle phase confidence 为 0；
+- action 数为 0，没有 `actions.npz`。
+
+这是 different-source replication，不是 EXP-001 同源重跑。输入变了，runtime、reachability、误差等数值的变化不能归因于算法；本次 generator 也没有算法改动。
+
+EXP-002 从 C1 重生成的两张公共 GIF 与现有 `docs/media/exp001-*` 文件逐字节一致。它们只含仿真画面，`contains_private_source_frames=false`。仓库复用现有媒体链接，没有再复制约 22 MB 文件。机器可读记录见 [`experiments/EXP-002-canonical-can-replication/metrics.json`](experiments/EXP-002-canonical-can-replication/metrics.json)。
+
 ## 建议的 Phase 2B
 
 1. 用现有素材制作罐体 mask 和固定 checkpoint annotation，在同一帧集上比较 LK、SAM 2/Cutie mask-gated CoTracker 与 TAPIR。主指标改为 semantic checkpoint error、occlusion recovery 和 hand takeover rate，不再只看 point availability。

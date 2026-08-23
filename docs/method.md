@@ -1,10 +1,12 @@
-# EXP-001 Phase 2A 方法
+# Phase 2A 方法与换源复现
 
 ## 研究边界
 
 EXP-001 检查“短时单物体视频证据能否成为 Panda 场景中的可信机器人数据”。Phase 2A 不训练策略，也不把二维轨迹或运动学 replay 当作 action。输出只有两种：通过全部物理与安全门禁的候选 episode，或带机器可读原因的拒绝。本轮只有后者。
 
 fresh evidence 来自 logical run `20260822T091027937019Z-93982cd7-b106`，相对路径 `EXP-001-phone-can-mujoco/runs/20260822T091027937019Z-93982cd7-b106`。suite 只请求 B0 与 B1；B2–B4 未请求。
+
+EXP-002 在 C1 `bf6615c1bf15f476ca6c51e9f20bbda69d6549a7` 上换用另一段私有录制素材，logical run 为 `20260823T083932722546Z-aac0791e-aa8b`。它仍只请求 B0 与 B1。该实验是 different-source replication，不是 EXP-001 同源重跑；数值变化同时受输入变化影响，不能用于评价算法改进。
 
 ## 锁定输入与分支
 
@@ -39,6 +41,8 @@ B1 使用 Lucas–Kanade forward/backward availability。`lk_point_availability_
 
 B1 的 reachability 为 `0.0969085909507541`，height gain 为 `0.185 m`，target error 为 `0.0599163907205696 m`。对象位姿由 kinematic override 驱动，physics/collision validation 均为 `not_applicable_kinematic`，`maximum_lift_m=0.0`，release 与 settle phase confidence 为 0。该分支只能诊断时序与映射，不能证明抓取、接触语义或可执行性。
 
+EXP-002 的 B1 也得到 `lk_point_availability_ratio=1.0`，scope 仍为 `point_availability_not_semantic_accuracy`。semantic accuracy 是 `not_measured`，release 与 settle confidence 为 0，terminal 为 `rejected / kinematic_replay_not_action`。这次没有发布可支持跨源语义误差比较的 checkpoint 或 mask 真值。
+
 ## Action 与 artifact 合同
 
 suite terminal 是 `recorded`，只表示证据记录完成。B0/B1 都是 `rejected`；`actions_exported=0`，递归检查没有 `actions.npz`。
@@ -50,6 +54,8 @@ suite terminal 是 `recorded`，只表示证据记录完成。B0/B1 都是 `reje
 ## 公开媒体
 
 公开 GIF 只能由 `copy_public_preview()` 从 `public_simulation_preview` entry 复制，且 manifest 必须声明 `contains_private_source_frames=false`。本轮 B0 与 B1 公共 GIF 都是 `960×720`、`25/3 fps`：B0 是 78 帧，时长 9.36 秒；B1 是 96 帧，时长 11.52 秒。逐帧解码与 privacy audit 均通过；画面只含 MuJoCo robot/table/can/box，并永久显示 `REJECTED — NOT ACTION DATA`、variant warning 与 simulation clock。
+
+EXP-002 从 C1 suite 重新生成的 B0/B1 GIF 与这两张文件逐字节一致，hash、size、帧数和时长均相同。公开记录直接复用现有链接，避免再提交 22,134,240 bytes。这个字节一致性只说明发布预览相同，不表示不同源视频的感知结果或语义准确率相同。
 
 私有 source/tracking/contact-sheet 媒体、run-local dashboard 和 release MP4 不复制、不链接。公开 GIF 不能被解释为 action success。
 
@@ -69,6 +75,6 @@ git diff --check
 
 ## Phase 2B
 
-第一步制作罐体 mask 与 checkpoint annotation，在同一素材上比较 mask-gated SAM2/CoTracker 和 LK，直接测 hand takeover drift。第二步在 pinned Panda 场景中研究 grasp-feasibility 与 contact-aware control，同时保持 seeds 19–48 和现有门禁冻结。
+第一步制作罐体 mask 与 checkpoint annotation，在同一素材上比较 mask-gated SAM2/CoTracker 和 LK，直接测 hand takeover drift。第二步在 pinned Panda 场景中研究 grasp-feasibility 与 contact-aware control，同时保持 seeds 19–48 和现有门禁冻结。算法 A/B 必须使用同源输入；EXP-001 与 EXP-002 的横向数值不承担这个用途。
 
 若要进入 B2–B4 并报告 metric 3D，必须提供校准 RGB-D/双目，或新录制带相机标定与实物几何测量的受控视频。单目类别先验只能是探索假设，不能作为公制真值。
