@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import mujoco
 import numpy as np
@@ -60,6 +61,33 @@ def test_upstream_metadata_pins_commit_and_license() -> None:
     )
     assert metadata["license"] == "Apache-2.0"
     assert LICENSE_PATH.read_text(encoding="utf-8").lstrip().startswith("Apache License")
+
+
+def test_upstream_metadata_hashes_match_pinned_raw_assets() -> None:
+    """Would catch hashes recorded after checkout-time byte conversion."""
+    metadata = json.loads(UPSTREAM_PATH.read_text(encoding="utf-8"))
+    upstream_files = metadata.get("upstream_files")
+
+    assert type(upstream_files) is dict
+    assert len(upstream_files) == 80
+    asset_root = ASSET_ROOT.resolve(strict=True)
+    for relative_name, expected_hash in upstream_files.items():
+        assert type(relative_name) is str
+        assert type(expected_hash) is str
+        relative_path = PurePosixPath(relative_name)
+        assert relative_name == relative_path.as_posix()
+        assert not relative_path.is_absolute()
+        assert relative_path.parts
+        assert all(part not in {"", ".", ".."} for part in relative_path.parts)
+        assert "\\" not in relative_name
+        assert len(expected_hash) == 64
+        assert set(expected_hash) <= set("0123456789abcdef")
+        candidate = ASSET_ROOT.joinpath(*relative_path.parts)
+        resolved = candidate.resolve(strict=True)
+        assert resolved.is_relative_to(asset_root)
+        assert candidate.is_file()
+        assert not candidate.is_symlink()
+        assert hashlib.sha256(candidate.read_bytes()).hexdigest() == expected_hash
 
 
 def test_scene_perturbation_updates_free_can_and_contact_properties() -> None:
