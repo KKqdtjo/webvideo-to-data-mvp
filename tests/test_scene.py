@@ -28,7 +28,7 @@ UPSTREAM_PATH = ASSET_ROOT / "UPSTREAM.json"
 LICENSE_PATH = ASSET_ROOT / "LICENSE"
 TCP_SITE_LINE = (
     b'                      <site name="panda_tcp" pos="0 0 0.1034" '
-    b'size="0.005" rgba="0 1 0 1"/>\r\n'
+    b'size="0.005" rgba="0 1 0 1"/>\n'
 )
 
 
