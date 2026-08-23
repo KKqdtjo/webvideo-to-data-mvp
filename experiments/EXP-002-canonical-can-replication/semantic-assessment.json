@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "experiment_id": "EXP-002-canonical-can-replication",
+  "logical_run_id": "20260823T083932722546Z-aac0791e-aa8b",
+  "relative_run_path": "EXP-002-canonical-can-replication/runs/20260823T083932722546Z-aac0791e-aa8b",
+  "assessment_type": "verified_metric_boundary",
+  "assessment_scope": "different_source_b1_semantic_boundary",
+  "evidence_basis": {
+    "experiment_design_recorded_before_run": [
+      "assessment_scope"
+    ],
+    "metrics_projected_from_public_safe_summary": [
+      "logical_run_id",
+      "terminal",
+      "tracking_assessment"
+    ],
+    "public_release_record": [
+      "schema_version",
+      "experiment_id",
+      "relative_run_path",
+      "assessment_type",
+      "variant",
+      "ground_truth",
+      "conclusion",
+      "publication"
+    ]
+  },
+  "variant": "B1",
+  "terminal": {
+    "status": "rejected",
+    "reason": "kinematic_replay_not_action",
+    "action_export_eligible": false,
+    "action_exported": false
+  },
+  "tracking_assessment": {
+    "lk_point_availability_ratio": 1.0,
+    "lk_metric_scope": "point_availability_not_semantic_accuracy",
+    "semantic_accuracy_status": "not_measured",
+    "perception_status": "degraded",
+    "perception_warnings": [
+      "zero_confidence_phase:release",
+      "zero_confidence_phase:settle"
+    ]
+  },
+  "ground_truth": {
+    "semantic_checkpoint_accuracy": {
+      "status": "not_measured",
+      "reason": "not_present_in_published_evidence"
+    },
+    "mask_iou": {
+      "status": "not_measured",
+      "reason": "not_present_in_published_evidence"
+    },
+    "contact_state": {
+      "status": "not_measured",
+      "reason": "not_present_in_published_evidence"
+    }
+  },
+  "conclusion": {
+    "semantic_track_reliable": "not_established",
+    "b1_is_action_data": false,
+    "statement": "LK availability measures point availability only; semantic accuracy was not measured, and B1 remains rejected non-action evidence."
+  },
+  "publication": {
+    "source_identifier_published": false,
+    "source_hash_published": false,
+    "local_paths_in_record": false,
+    "private_source_frames_in_record": false
+  }
+}

@@ -1,0 +1,41 @@
+<mujoco model="exp001_panda_pick_place">
+  <include file="panda_exp001.xml"/>
+
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+  </visual>
+  <default>
+    <geom friction="0.8 0.02 0.002" condim="4"/>
+    <default class="environment_visual">
+      <geom contype="0" conaffinity="0" group="2"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0 -0.2 1.5" dir="0 0.5 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="-0.8 1.0 1.0" dir="0.6 -0.4 -0.8" diffuse="0.45 0.45 0.45"/>
+    <camera name="overview" pos="0.9 -0.45 0.85" xyaxes="0.75 0.66 0 -0.35 0.40 0.85"/>
+
+    <body name="table" pos="0 0.5 -0.035">
+      <geom name="table_geom" type="box" size="0.55 0.45 0.035" rgba="0.55 0.38 0.23 1"/>
+      <geom class="environment_visual" type="box" size="0.55 0.45 0.035" rgba="0.55 0.38 0.23 1"/>
+    </body>
+
+    <body name="box" pos="-0.05 0.55 0.012">
+      <geom name="box_floor_geom" type="box" size="0.09 0.09 0.012" rgba="0.2 0.55 0.25 1"/>
+      <geom class="environment_visual" type="box" size="0.09 0.09 0.012" rgba="0.2 0.55 0.25 1"/>
+      <geom name="box_wall_pos_x" type="box" pos="0.085 0 0.035" size="0.005 0.09 0.035" rgba="0.2 0.55 0.25 1"/>
+      <geom name="box_wall_neg_x" type="box" pos="-0.085 0 0.035" size="0.005 0.09 0.035" rgba="0.2 0.55 0.25 1"/>
+      <geom name="box_wall_pos_y" type="box" pos="0 0.085 0.035" size="0.08 0.005 0.035" rgba="0.2 0.55 0.25 1"/>
+      <geom name="box_wall_neg_y" type="box" pos="0 -0.085 0.035" size="0.08 0.005 0.035" rgba="0.2 0.55 0.25 1"/>
+    </body>
+
+    <body name="can" pos="0.12 0.45 0.045">
+      <freejoint name="can_free"/>
+      <geom name="can_geom" type="cylinder" size="0.025 0.045" mass="0.12" priority="1" rgba="0.82 0.16 0.12 1"/>
+    </body>
+  </worldbody>
+</mujoco>
