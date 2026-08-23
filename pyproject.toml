@@ -39,6 +39,7 @@ webvideo_to_data = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
     "acceptance: slow local physical acceptance tests",
     "private_video: requires the local registered EXP-001 source",
