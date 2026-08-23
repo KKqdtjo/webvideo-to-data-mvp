@@ -1210,6 +1210,39 @@ def test_public_preview_copy_refuses_linked_destination_directory(
     assert not (target / "public.gif").exists()
 
 
+def test_stable_posix_parent_normalizes_not_a_directory_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_open = os.open
+    open_calls = 0
+
+    def open_after_parent_swap(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal open_calls
+        open_calls += 1
+        if dir_fd is None:
+            return original_open(os.devnull, os.O_RDONLY)
+        raise NotADirectoryError("output parent was replaced")
+
+    monkeypatch.setattr(os, "O_DIRECTORY", 0, raising=False)
+    monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(os, "open", open_after_parent_swap)
+
+    with pytest.raises(ValueError, match="link|junction|reparse") as error:
+        with dashboard_module._stable_posix_parent(
+            tmp_path / "publication" / "public.gif"
+        ):
+            pytest.fail("a swapped output parent must not be opened")
+
+    assert isinstance(error.value.__cause__, NotADirectoryError)
+    assert open_calls == 2
+
+
 def test_public_preview_copy_rejects_parent_swapped_to_junction_after_path_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -397,10 +397,15 @@ def _stable_posix_parent(path: Path) -> Any:
     try:
         for part in path.parent.parts[1:]:
             try:
-                child_fd = os.open(part, flags, dir_fd=directory_fd)
-            except FileNotFoundError:
-                os.mkdir(part, mode=0o700, dir_fd=directory_fd)
-                child_fd = os.open(part, flags, dir_fd=directory_fd)
+                try:
+                    child_fd = os.open(part, flags, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+                    child_fd = os.open(part, flags, dir_fd=directory_fd)
+            except NotADirectoryError as error:
+                raise ValueError(
+                    "output parent link, junction, or reparse point is forbidden"
+                ) from error
             os.close(directory_fd)
             directory_fd = child_fd
         yield directory_fd
