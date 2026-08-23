@@ -42,13 +42,19 @@
       "public_media.B1.duration_s"
     ],
     "verification_reproduced_by_strict_cli_from_immutable_suite": [
-      "verification",
+      "verification.suite_verified",
+      "verification.b0_verified",
+      "verification.b1_verified",
+      "verification.decode_media",
+      "verification.privacy_audit",
       "actions.actions_exported",
       "public_media.B0.full_decode",
       "public_media.B0.privacy_audit",
-      "public_media.B0.reused_existing_identical_file",
       "public_media.B1.full_decode",
-      "public_media.B1.privacy_audit",
+      "public_media.B1.privacy_audit"
+    ],
+    "release_bytes_compared_with_safe_summary_hash_and_size": [
+      "public_media.B0.reused_existing_identical_file",
       "public_media.B1.reused_existing_identical_file"
     ],
     "public_release_record": [
@@ -57,7 +63,9 @@
       "relative_run_path",
       "source",
       "public_media.B0.repository_path",
-      "public_media.B1.repository_path"
+      "public_media.B1.repository_path",
+      "verification.derivation",
+      "verification.method"
     ]
   },
   "replication": {
