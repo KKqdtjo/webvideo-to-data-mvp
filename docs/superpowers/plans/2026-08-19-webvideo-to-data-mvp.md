@@ -75,7 +75,7 @@ def test_trajectory_rejects_mismatched_lengths():
         )
 ```
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_schema.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_schema.py -v`
 Expected: FAIL because `webvideo_to_data.schema` does not exist.
 
 - [ ] **Step 3: Implement validated data contracts**
@@ -105,14 +105,14 @@ assert metadata.fps == pytest.approx(10.0, rel=0.1)
 assert len(sha256_file(fixture_path)) == 64
 ```
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_media.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_media.py -v`
 Expected: FAIL because `probe_video` and `sha256_file` are missing.
 
 - [ ] **Step 5: Implement media probing and hashing**
 
 `probe_video` reads width, height, fps, frame count, and duration using OpenCV, raises `FileNotFoundError` for a missing path and `ValueError("video cannot be opened")` for an unreadable file. `sha256_file` streams 1 MiB chunks.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_schema.py tests/test_media.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_schema.py tests/test_media.py -v`
 Expected: all tests pass.
 
 - [ ] **Step 6: Secure generated and sensitive files**
@@ -154,7 +154,7 @@ Do not add `video/`, credential files, cookies, `.venv/`, or `artifacts/`.
 
 Generate a 20-frame 96×72 video containing a textured 16×20 blue rectangle that moves exactly two pixels right per frame. Call `track_roi_lk` with its first-frame ROI and assert final displacement is `38±3` pixels, valid confidence exists for at least 18 frames, and all timestamps are monotonic.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_tracking.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_tracking.py -v`
 Expected: FAIL because `tracking.py` does not exist.
 
 - [ ] **Step 2: Implement Lucas-Kanade ROI tracking**
@@ -167,7 +167,7 @@ Run the tracking test. Expected: pass.
 
 Use a literal center trajectory with 10 stationary frames, 20 moving frames, and 10 stationary frames. With `fps=10`, `speed_on_px_s=8`, `speed_off_px_s=3`, `min_phase_s=0.3`, assert phase names are exactly `("approach", "hold", "release", "settle")`, `hold.start_frame` is within one frame of 10, and `release.start_frame` is within two frames of 30.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_contact.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_contact.py -v`
 Expected: FAIL because `infer_motion_phases` is missing.
 
 - [ ] **Step 4: Implement motion-based phase inference**
@@ -180,7 +180,7 @@ Run tracking and contact tests. Expected: pass.
 
 The failing test renders five frames and checks the output video exists, has five readable frames, and the first output frame differs from the input in a 5-pixel neighborhood around the tracked center. Implement colored ROI, point center, trail, phase label, confidence bar, and timestamp. No network or model weight is used.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_visualization.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_visualization.py -v`
 Expected after implementation: pass.
 
 - [ ] **Step 6: Commit Task 2**
@@ -209,7 +209,7 @@ git commit -m "feat: track object motion and visualize contact phases"
 
 With image size 540×960, scene bounds x `[-0.15,0.15]` m and y `[0.35,0.65]` m, assert center pixel `(270,480)` maps to `(0.0,0.5)`, left/top `(0,0)` maps to `(-0.15,0.35)`, and all points are clipped to bounds. This is an explicit canonical mapping, not a claim of metric reconstruction.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_retargeting.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_retargeting.py -v`
 Expected: FAIL because `retargeting.py` does not exist.
 
 - [ ] **Step 2: Implement canonical scene mapping and reference phases**
@@ -222,7 +222,7 @@ Run retargeting tests. Expected: pass.
 
 Load the XML in headless mode, reset, run 100 simulation steps, and assert finite `qpos/qvel`, the model contains body names `can`, `box`, and `panda_hand`, and `SimulationResult` reports a nonnegative minimum distance and no invalid numerical state.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_simulation.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_simulation.py -v`
 Expected: FAIL because the scene and runner do not exist.
 
 - [ ] **Step 4: Implement the Panda scene and replay runner**
@@ -267,7 +267,7 @@ git commit -m "feat: replay object-centric references in MuJoCo"
 
 Use a synthetic moving-object video and a small config. Assert `run_experiment(config_path, output_dir)` creates `provenance.json`, `trajectory_2d.npz`, `phases.json`, `metrics.json`, and `tracking_overlay.mp4`; assert metrics contain `source_sha256`, `lk_point_availability_ratio`, `phase_count`, `variant`, `simulation_mode`, and `placed_successfully`. The LK metric is point confidence/forward-backward availability, not semantic tracking accuracy.
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_experiment.py -v`  
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_experiment.py -v`
 Expected: FAIL because `experiment.py` does not exist.
 
 - [ ] **Step 2: Implement orchestration and atomic artifact writes**
