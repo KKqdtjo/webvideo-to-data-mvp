@@ -108,6 +108,7 @@ def _real_finger_contacts(can_y: float) -> tuple[bool, bool]:
     return _finger_contact_state(data, can_geom_id, finger_geom_ids)
 
 
+@pytest.mark.requires_renderer
 def test_headless_mujoco_scene_and_runner_smoke() -> None:
     model = mujoco.MjModel.from_xml_path(str(ASSET_PATH))
     data = mujoco.MjData(model)
@@ -175,6 +176,7 @@ def test_kinematic_object_replay_is_never_physics_success() -> None:
         mode="kinematic_replay",
         model_path=ASSET_PATH,
         render_every=1000,
+        render=False,
     )
 
     assert result.maximum_can_height_gain_m >= 0.03
@@ -195,6 +197,7 @@ def test_stationary_physics_scene_is_not_a_successful_placement() -> None:
         model_path=ASSET_PATH,
         max_steps=100,
         render_every=1000,
+        render=False,
     )
 
     assert result.maximum_lift_m < 0.03
@@ -219,6 +222,7 @@ def test_gripper_closed_evidence_uses_actual_finger_state() -> None:
         model_path=ASSET_PATH,
         max_steps=1,
         render_every=1000,
+        render=False,
     )
 
     assert result.gripper_width_m[0] > 0.07
@@ -277,6 +281,7 @@ def test_support_duration_resets_if_contact_is_lost_after_release() -> None:
         mode="kinematic_replay",
         model_path=ASSET_PATH,
         render_every=1000,
+        render=False,
     )
 
     assert result.support_contact_duration_s == 0.0
@@ -299,6 +304,7 @@ def test_box_placement_uses_wall_interior_minus_can_radius() -> None:
         mode="kinematic_replay",
         model_path=ASSET_PATH,
         render_every=1000,
+        render=False,
     )
 
     assert not result.finishes_inside_box
@@ -334,12 +340,14 @@ def test_replay_ik_uses_end_effector_orientation_reference() -> None:
         model_path=ASSET_PATH,
         max_steps=20,
         render_every=1000,
+        render=False,
     )
     rotated_result = run_mujoco_replay(
         rotated,
         model_path=ASSET_PATH,
         max_steps=20,
         render_every=1000,
+        render=False,
     )
 
     assert not np.allclose(identity_result.qpos[-1, 7:14], rotated_result.qpos[-1, 7:14])
@@ -369,10 +377,18 @@ def test_ik_residuals_distinguish_reachable_and_unreachable_references() -> None
     )
 
     reachable_result = run_mujoco_replay(
-        reachable, model_path=ASSET_PATH, max_steps=20, render_every=1000
+        reachable,
+        model_path=ASSET_PATH,
+        max_steps=20,
+        render_every=1000,
+        render=False,
     )
     unreachable_result = run_mujoco_replay(
-        unreachable, model_path=ASSET_PATH, max_steps=20, render_every=1000
+        unreachable,
+        model_path=ASSET_PATH,
+        max_steps=20,
+        render_every=1000,
+        render=False,
     )
 
     assert reachable_result.ik_position_error_m.shape == (20,)
@@ -404,6 +420,7 @@ def test_real_b0_physics_replay_reports_measured_controller_failure() -> None:
         mode="physics_grasp",
         model_path=ASSET_PATH,
         render_every=100000,
+        render=False,
     )
 
     assert result.mode == "physics_grasp"

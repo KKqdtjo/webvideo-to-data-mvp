@@ -43,4 +43,5 @@ pythonpath = ["."]
 markers = [
     "acceptance: slow local physical acceptance tests",
     "private_video: requires the local registered EXP-001 source",
+    "requires_renderer: requires a working MuJoCo OpenGL rendering backend",
 ]

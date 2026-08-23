@@ -157,6 +157,7 @@ def _write_dashboard_input_fixture(
     return run
 
 
+@pytest.mark.requires_renderer
 def test_dashboard_leads_with_action_outcome_and_uses_relative_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -181,6 +182,7 @@ def test_dashboard_leads_with_action_outcome_and_uses_relative_assets(
     assert "private local media omitted" in html
 
 
+@pytest.mark.requires_renderer
 def test_unfinalized_dashboard_does_not_trust_preexisting_preview_by_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

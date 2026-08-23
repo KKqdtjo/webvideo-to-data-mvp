@@ -61,3 +61,32 @@ def test_ci_installs_runtime_dependencies_and_uses_osmesa_on_ubuntu() -> None:
         workflow,
         re.DOTALL,
     )
+
+
+def test_ci_runs_renderer_tests_only_on_the_renderer_capable_runner() -> None:
+    """Keep Windows coverage broad without claiming hosted-runner OpenGL support."""
+    pyproject = tomllib.loads(
+        (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    markers = pyproject["tool"]["pytest"]["ini_options"]["markers"]
+    assert any(marker.startswith("requires_renderer:") for marker in markers)
+    assert re.search(
+        r"- name: Run public tests \(Windows\).*?\n"
+        r"\s+if: runner\.os == 'Windows'\n"
+        r'\s+run: uv run pytest -m "not acceptance and not private_video '
+        r'and not requires_renderer" -q -p no:cacheprovider',
+        workflow,
+        re.DOTALL,
+    )
+    ubuntu_step = re.search(
+        r"- name: Run public tests \(Ubuntu\)(.*?)\n\s+- run: git diff --check",
+        workflow,
+        re.DOTALL,
+    )
+    assert ubuntu_step
+    assert 'pytest -m "not acceptance and not private_video"' in ubuntu_step.group(1)
+    assert "not requires_renderer" not in ubuntu_step.group(1)

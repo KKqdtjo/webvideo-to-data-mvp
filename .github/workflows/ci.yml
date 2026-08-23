@@ -31,7 +31,7 @@ jobs:
       - run: uv run python tests/verify_wheel_assets.py dist/webvideo_to_data-0.1.0-py3-none-any.whl
       - name: Run public tests (Windows)
         if: runner.os == 'Windows'
-        run: uv run pytest -m "not acceptance and not private_video" -q -p no:cacheprovider
+        run: uv run pytest -m "not acceptance and not private_video and not requires_renderer" -q -p no:cacheprovider
       - name: Run public tests (Ubuntu)
         if: runner.os == 'Linux'
         env:
