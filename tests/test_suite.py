@@ -8,7 +8,9 @@ import os
 from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
+import tempfile
 import time
+from typing import TextIO, TypeAlias
 
 import cv2
 import numpy as np
@@ -36,6 +38,82 @@ from tests.helpers import write_complete_config
 
 
 FIXED_RUN_ID = "20260819T120102123456Z-a1b2c3d4-7f29"
+_PARENT_PROCESS_PHASE_TIMEOUT_S = 30.0
+_CHILD_PROCESS_FAIL_SAFE_TIMEOUT_S = 120.0
+
+_ProcessCapture: TypeAlias = tuple[
+    str, subprocess.Popen[str], TextIO, TextIO
+]
+
+
+def _captured_process_text(stream: TextIO) -> str:
+    stream.flush()
+    stream.seek(0)
+    return stream.read()
+
+
+def _process_diagnostics(
+    role: str,
+    returncode: int,
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    early: bool = False,
+) -> str:
+    exit_description = "exited early" if early else "exited"
+    return (
+        f"{role} subprocess {exit_description} with return code {returncode}\n"
+        f"stdout:\n{_captured_process_text(stdout)}\n"
+        f"stderr:\n{_captured_process_text(stderr)}"
+    )
+
+
+def _assert_process_alive(
+    role: str,
+    process: subprocess.Popen[str],
+    stdout: TextIO,
+    stderr: TextIO,
+) -> None:
+    returncode = process.poll()
+    if returncode is None:
+        return
+    pytest.fail(
+        _process_diagnostics(role, returncode, stdout, stderr, early=True),
+        pytrace=False,
+    )
+
+
+def _wait_for_process_marker(
+    marker: Path,
+    processes: tuple[_ProcessCapture, ...],
+    *,
+    timeout_s: float,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not marker.exists():
+        for role, process, stdout, stderr in processes:
+            _assert_process_alive(role, process, stdout, stderr)
+        if time.monotonic() >= deadline:
+            pytest.fail(f"timed out waiting for {marker.name}", pytrace=False)
+        time.sleep(0.01)
+
+
+def _wait_for_process_success(
+    role: str,
+    process: subprocess.Popen[str],
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    timeout_s: float,
+) -> None:
+    try:
+        returncode = process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"timed out waiting for {role} subprocess", pytrace=False)
+    if returncode != 0:
+        pytest.fail(
+            _process_diagnostics(role, returncode, stdout, stderr), pytrace=False
+        )
 
 
 def _make_directory_link(link: Path, target: Path) -> None:
@@ -1108,15 +1186,116 @@ def test_contained_rejects_existing_directory_link_escape(tmp_path: Path) -> Non
         _remove_directory_link(linked)
 
 
+def test_process_exit_diagnostics_include_role_returncode_and_streams() -> None:
+    with (
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr,
+    ):
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "print('stdout sentinel', flush=True); "
+                    "print('stderr sentinel', file=sys.stderr, flush=True); "
+                    "raise SystemExit(7)"
+                ),
+            ],
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+        )
+        process.wait(timeout=10.0)
+
+        with pytest.raises(pytest.fail.Exception) as error:
+            _assert_process_alive("old", process, stdout, stderr)
+
+    message = str(error.value)
+    assert "old subprocess exited early with return code 7" in message
+    assert "stdout sentinel" in message
+    assert "stderr sentinel" in message
+
+
+def test_process_marker_wait_uses_a_fresh_deadline_for_each_phase(
+    tmp_path: Path,
+) -> None:
+    ready = tmp_path / "ready"
+    start = tmp_path / "start"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    release = tmp_path / "release"
+    script = r"""
+import sys
+import time
+from pathlib import Path
+
+ready, start, first, second, release = map(Path, sys.argv[1:])
+ready.write_text("ready", encoding="utf-8")
+fail_safe = time.monotonic() + 2.0
+while not start.exists():
+    if time.monotonic() >= fail_safe:
+        raise TimeoutError("timed out waiting for start")
+    time.sleep(0.01)
+time.sleep(0.3)
+first.write_text("ready", encoding="utf-8")
+time.sleep(0.3)
+second.write_text("ready", encoding="utf-8")
+deadline = time.monotonic() + 2.0
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+"""
+    with (
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr,
+    ):
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(ready),
+                str(start),
+                str(first),
+                str(second),
+                str(release),
+            ],
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+        )
+        capture = ("worker", process, stdout, stderr)
+        try:
+            _wait_for_process_marker(ready, (capture,), timeout_s=10.0)
+            start.touch()
+            _wait_for_process_marker(first, (capture,), timeout_s=0.5)
+            _wait_for_process_marker(second, (capture,), timeout_s=0.5)
+        finally:
+            release.touch()
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5.0)
+
+
 def test_physical_alias_suite_lock_serializes_real_process_pointer_publication(
     tmp_path: Path,
 ) -> None:
     config_path = write_complete_config(tmp_path)
     root = (tmp_path / "physical-artifacts").resolve()
     root.mkdir()
-    alias = Path("\\\\?\\" + str(root)) if os.name == "nt" else root
+    if os.name == "nt":
+        alias = Path("\\\\?\\" + str(root))
+    else:
+        alias = tmp_path / "physical-artifacts-alias"
+        try:
+            alias.symlink_to(root, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"directory symlinks are unavailable: {error}")
     if not alias.samefile(root):
         pytest.skip("a physical parent path alias is unavailable")
+    assert _CHILD_PROCESS_FAIL_SAFE_TIMEOUT_S > (
+        2 * _PARENT_PROCESS_PHASE_TIMEOUT_S
+    )
     ready_old = tmp_path / "ready-old"
     ready_new = tmp_path / "ready-new"
     start = tmp_path / "start-publication"
@@ -1131,17 +1310,18 @@ import time
 from pathlib import Path
 import webvideo_to_data.suite as suite
 
-config, root, run_id, role, ready, start, old_inside, release_old, new_inside = sys.argv[1:]
+config, root, run_id, role, ready, start, old_inside, release_old, new_inside, fail_safe_s = sys.argv[1:]
 ready = Path(ready)
 start = Path(start)
 old_inside = Path(old_inside)
 release_old = Path(release_old)
 new_inside = Path(new_inside)
+fail_safe_s = float(fail_safe_s)
 real_publish = suite._publish_latest
 real_replace = suite._replace_latest
 
 def wait_for(path):
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + fail_safe_s
     while not path.exists():
         if time.monotonic() >= deadline:
             raise TimeoutError(f"timed out waiting for {path.name}")
@@ -1171,55 +1351,90 @@ suite.run_suite(config, root, variants=("B2",), no_render=True, run_id=run_id)
         OPENBLAS_NUM_THREADS="1",
         OMP_NUM_THREADS="1",
     )
-    common = [str(start), str(old_inside), str(release_old), str(new_inside)]
-    old = subprocess.Popen(
-        [
-            sys.executable, "-c", script, str(config_path), str(root), old_id,
-            "old", str(ready_old), *common,
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        env=environment,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    new: subprocess.Popen[str] | None = None
-    try:
-        new = subprocess.Popen(
+    common = [
+        str(start),
+        str(old_inside),
+        str(release_old),
+        str(new_inside),
+        str(_CHILD_PROCESS_FAIL_SAFE_TIMEOUT_S),
+    ]
+    with (
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as old_stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as old_stderr,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as new_stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as new_stderr,
+    ):
+        old = subprocess.Popen(
             [
-                sys.executable, "-c", script, str(config_path), str(alias), new_id,
-                "new", str(ready_new), *common,
+                sys.executable, "-c", script, str(config_path), str(root), old_id,
+                "old", str(ready_old), *common,
             ],
             cwd=Path(__file__).resolve().parents[1],
             env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=old_stdout,
+            stderr=old_stderr,
             text=True,
         )
-        deadline = time.monotonic() + 30.0
-        while not (ready_old.exists() and ready_new.exists()):
-            assert old.poll() is None
-            assert new.poll() is None
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        start.write_text("go", encoding="utf-8")
-        while not old_inside.exists():
-            assert old.poll() is None
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        time.sleep(0.25)
-        assert not new_inside.exists()
-        release_old.write_text("go", encoding="utf-8")
-        old_stdout, old_stderr = old.communicate(timeout=30.0)
-        new_stdout, new_stderr = new.communicate(timeout=30.0)
-        assert old.returncode == 0, old_stdout + old_stderr
-        assert new.returncode == 0, new_stdout + new_stderr
-    finally:
-        release_old.touch()
-        for process in (old, new):
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait(timeout=5.0)
+        new: subprocess.Popen[str] | None = None
+        try:
+            new = subprocess.Popen(
+                [
+                    sys.executable, "-c", script, str(config_path), str(alias),
+                    new_id, "new", str(ready_new), *common,
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                env=environment,
+                stdout=new_stdout,
+                stderr=new_stderr,
+                text=True,
+            )
+            captures = (
+                ("old", old, old_stdout, old_stderr),
+                ("new", new, new_stdout, new_stderr),
+            )
+            _wait_for_process_marker(
+                ready_old,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _wait_for_process_marker(
+                ready_new,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            start.write_text("go", encoding="utf-8")
+            _wait_for_process_marker(
+                old_inside,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            time.sleep(0.25)
+            _assert_process_alive("old", old, old_stdout, old_stderr)
+            _assert_process_alive("new", new, new_stdout, new_stderr)
+            assert not new_inside.exists()
+            release_old.write_text("go", encoding="utf-8")
+            _wait_for_process_success(
+                "old",
+                old,
+                old_stdout,
+                old_stderr,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _wait_for_process_success(
+                "new",
+                new,
+                new_stdout,
+                new_stderr,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+        finally:
+            start.touch()
+            release_old.touch()
+            for process in (old, new):
+                if process is not None and process.poll() is None:
+                    process.kill()
+                if process is not None:
+                    process.wait(timeout=5.0)
 
     experiment = root / "SYNTHETIC"
     latest = json.loads((experiment / "latest.json").read_text(encoding="utf-8"))
