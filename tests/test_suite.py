@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import errno
 from hashlib import sha256
 import json
 import os
 from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
+import tempfile
 import time
+from typing import Callable, Protocol, TextIO, TypeAlias
 
 import cv2
 import numpy as np
@@ -36,6 +39,157 @@ from tests.helpers import write_complete_config
 
 
 FIXED_RUN_ID = "20260819T120102123456Z-a1b2c3d4-7f29"
+_PARENT_PROCESS_PHASE_TIMEOUT_S = 30.0
+_CHILD_PROCESS_FAIL_SAFE_TIMEOUT_S = 120.0
+
+_ProcessCapture: TypeAlias = tuple[
+    str, subprocess.Popen[str], TextIO, TextIO
+]
+
+
+class _ReapableProcess(Protocol):
+    def poll(self) -> int | None: ...
+
+    def kill(self) -> None: ...
+
+    def wait(self, timeout: float) -> int: ...
+
+
+def _captured_process_text(stream: TextIO) -> str:
+    stream.flush()
+    stream.seek(0)
+    return stream.read()
+
+
+def _process_diagnostics(
+    role: str,
+    returncode: int,
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    early: bool = False,
+) -> str:
+    exit_description = "exited early" if early else "exited"
+    return (
+        f"{role} subprocess {exit_description} with return code {returncode}\n"
+        f"stdout:\n{_captured_process_text(stdout)}\n"
+        f"stderr:\n{_captured_process_text(stderr)}"
+    )
+
+
+def _assert_process_alive(
+    role: str,
+    process: subprocess.Popen[str],
+    stdout: TextIO,
+    stderr: TextIO,
+) -> None:
+    returncode = process.poll()
+    if returncode is None:
+        return
+    pytest.fail(
+        _process_diagnostics(role, returncode, stdout, stderr, early=True),
+        pytrace=False,
+    )
+
+
+def _wait_for_process_marker(
+    marker: Path,
+    processes: tuple[_ProcessCapture, ...],
+    *,
+    timeout_s: float,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    deadline = monotonic() + timeout_s
+    while not marker.exists():
+        for role, process, stdout, stderr in processes:
+            _assert_process_alive(role, process, stdout, stderr)
+        if monotonic() >= deadline:
+            pytest.fail(f"timed out waiting for {marker.name}", pytrace=False)
+        sleep(0.01)
+
+
+def _wait_for_process_success(
+    role: str,
+    process: subprocess.Popen[str],
+    stdout: TextIO,
+    stderr: TextIO,
+    *,
+    timeout_s: float,
+) -> None:
+    try:
+        returncode = process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"timed out waiting for {role} subprocess", pytrace=False)
+    if returncode != 0:
+        pytest.fail(
+            _process_diagnostics(role, returncode, stdout, stderr), pytrace=False
+        )
+
+
+def _release_and_reap_processes(
+    release_paths: tuple[Path, ...],
+    processes: tuple[_ReapableProcess | None, ...],
+) -> None:
+    preserve_primary_failure = sys.exc_info()[0] is not None
+    cleanup_errors: list[Exception] = []
+    for path in release_paths:
+        try:
+            path.touch()
+        except Exception as error:
+            cleanup_errors.append(error)
+    for process in processes:
+        if process is None:
+            continue
+        try:
+            if process.poll() is None:
+                process.kill()
+        except Exception as error:
+            cleanup_errors.append(error)
+        try:
+            process.wait(timeout=5.0)
+        except Exception as error:
+            cleanup_errors.append(error)
+    if cleanup_errors and not preserve_primary_failure:
+        raise RuntimeError("subprocess cleanup failed") from cleanup_errors[0]
+
+
+def _assert_physical_alias_lock_contended(lock_path: Path) -> None:
+    with lock_path.open("a+b") as stream:
+        if stream.seek(0, os.SEEK_END) == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        acquired = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError as error:
+            if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+            return
+        finally:
+            if acquired:
+                stream.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    pytest.fail(
+        "suite lock through physical alias was not held by old publication",
+        pytrace=False,
+    )
 
 
 def _make_directory_link(link: Path, target: Path) -> None:
@@ -1108,40 +1262,148 @@ def test_contained_rejects_existing_directory_link_escape(tmp_path: Path) -> Non
         _remove_directory_link(linked)
 
 
-def test_physical_alias_suite_lock_serializes_real_process_pointer_publication(
+def test_process_exit_diagnostics_include_role_returncode_and_streams() -> None:
+    with (
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr,
+    ):
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "print('stdout sentinel', flush=True); "
+                    "print('stderr sentinel', file=sys.stderr, flush=True); "
+                    "raise SystemExit(7)"
+                ),
+            ],
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+        )
+        try:
+            process.wait(timeout=10.0)
+            with pytest.raises(pytest.fail.Exception) as error:
+                _assert_process_alive("old", process, stdout, stderr)
+        finally:
+            _release_and_reap_processes((), (process,))
+
+    message = str(error.value)
+    assert "old subprocess exited early with return code 7" in message
+    assert "stdout sentinel" in message
+    assert "stderr sentinel" in message
+
+
+def test_process_cleanup_does_not_mask_the_primary_failure() -> None:
+    class CleanupFailure:
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            raise OSError("cleanup sentinel")
+
+        def wait(self, timeout: float) -> int:
+            del timeout
+            raise OSError("wait cleanup sentinel")
+
+    with pytest.raises(RuntimeError, match="primary sentinel"):
+        try:
+            raise RuntimeError("primary sentinel")
+        finally:
+            _release_and_reap_processes((), (CleanupFailure(),))
+
+
+def test_process_marker_wait_uses_a_fresh_deadline_for_each_phase(
     tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    fake_now = 0.0
+
+    def monotonic() -> float:
+        return fake_now
+
+    def advance(interval_s: float) -> None:
+        nonlocal fake_now
+        fake_now += interval_s
+        if fake_now >= 0.3:
+            first.touch()
+        if fake_now >= 0.6:
+            second.touch()
+
+    _wait_for_process_marker(
+        first,
+        (),
+        timeout_s=0.5,
+        monotonic=monotonic,
+        sleep=advance,
+    )
+    _wait_for_process_marker(
+        second,
+        (),
+        timeout_s=0.5,
+        monotonic=monotonic,
+        sleep=advance,
+    )
+
+    assert fake_now >= 0.6
+
+
+def _exercise_physical_alias_suite_lock(
+    tmp_path: Path,
+    *,
+    disable_experiment_lock: bool,
 ) -> None:
     config_path = write_complete_config(tmp_path)
     root = (tmp_path / "physical-artifacts").resolve()
     root.mkdir()
-    alias = Path("\\\\?\\" + str(root)) if os.name == "nt" else root
+    if os.name == "nt":
+        alias = Path("\\\\?\\" + str(root))
+    else:
+        alias = tmp_path / "physical-artifacts-alias"
+        try:
+            alias.symlink_to(root, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"directory symlinks are unavailable: {error}")
     if not alias.samefile(root):
         pytest.skip("a physical parent path alias is unavailable")
+    assert _CHILD_PROCESS_FAIL_SAFE_TIMEOUT_S > (
+        2 * _PARENT_PROCESS_PHASE_TIMEOUT_S
+    )
     ready_old = tmp_path / "ready-old"
     ready_new = tmp_path / "ready-new"
     start = tmp_path / "start-publication"
     old_inside = tmp_path / "old-inside-replace"
     release_old = tmp_path / "release-old"
     new_inside = tmp_path / "new-inside-replace"
+    new_lock_attempt = tmp_path / "new-lock-attempt"
+    new_lock_acquired = tmp_path / "new-lock-acquired"
     old_id = "20260819T120102123456Z-a1b2c3d4-7f29"
     new_id = "20260819T120103123456Z-a1b2c3d4-7f30"
     script = r"""
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 import webvideo_to_data.suite as suite
 
-config, root, run_id, role, ready, start, old_inside, release_old, new_inside = sys.argv[1:]
+config, root, run_id, role, ready, start, old_inside, release_old, new_inside, new_lock_attempt, new_lock_acquired, disable_lock, fail_safe_s = sys.argv[1:]
 ready = Path(ready)
 start = Path(start)
 old_inside = Path(old_inside)
 release_old = Path(release_old)
 new_inside = Path(new_inside)
+new_lock_attempt = Path(new_lock_attempt)
+new_lock_acquired = Path(new_lock_acquired)
+disable_lock = disable_lock == "1"
+fail_safe_s = float(fail_safe_s)
 real_publish = suite._publish_latest
 real_replace = suite._replace_latest
+real_experiment_lock = suite._experiment_lock
 
 def wait_for(path):
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + fail_safe_s
     while not path.exists():
         if time.monotonic() >= deadline:
             raise TimeoutError(f"timed out waiting for {path.name}")
@@ -1161,8 +1423,23 @@ def gated_replace(path, payload):
         wait_for(release_old)
     return real_replace(path, payload)
 
+@contextmanager
+def observed_experiment_lock(lock_path):
+    if role == "new":
+        new_lock_attempt.write_text("attempt", encoding="utf-8")
+    if disable_lock:
+        if role == "new":
+            new_lock_acquired.write_text("acquired", encoding="utf-8")
+        yield
+        return
+    with real_experiment_lock(lock_path):
+        if role == "new":
+            new_lock_acquired.write_text("acquired", encoding="utf-8")
+        yield
+
 suite._publish_latest = gated_publish
 suite._replace_latest = gated_replace
+suite._experiment_lock = observed_experiment_lock
 suite.run_suite(config, root, variants=("B2",), no_render=True, run_id=run_id)
 """
     environment = dict(
@@ -1171,61 +1448,131 @@ suite.run_suite(config, root, variants=("B2",), no_render=True, run_id=run_id)
         OPENBLAS_NUM_THREADS="1",
         OMP_NUM_THREADS="1",
     )
-    common = [str(start), str(old_inside), str(release_old), str(new_inside)]
-    old = subprocess.Popen(
-        [
-            sys.executable, "-c", script, str(config_path), str(root), old_id,
-            "old", str(ready_old), *common,
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        env=environment,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    new: subprocess.Popen[str] | None = None
-    try:
-        new = subprocess.Popen(
+    common = [
+        str(start),
+        str(old_inside),
+        str(release_old),
+        str(new_inside),
+        str(new_lock_attempt),
+        str(new_lock_acquired),
+        "1" if disable_experiment_lock else "0",
+        str(_CHILD_PROCESS_FAIL_SAFE_TIMEOUT_S),
+    ]
+    with (
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as old_stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as old_stderr,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as new_stdout,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as new_stderr,
+    ):
+        old = subprocess.Popen(
             [
-                sys.executable, "-c", script, str(config_path), str(alias), new_id,
-                "new", str(ready_new), *common,
+                sys.executable, "-c", script, str(config_path), str(root), old_id,
+                "old", str(ready_old), *common,
             ],
             cwd=Path(__file__).resolve().parents[1],
             env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=old_stdout,
+            stderr=old_stderr,
             text=True,
         )
-        deadline = time.monotonic() + 30.0
-        while not (ready_old.exists() and ready_new.exists()):
-            assert old.poll() is None
-            assert new.poll() is None
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        start.write_text("go", encoding="utf-8")
-        while not old_inside.exists():
-            assert old.poll() is None
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        time.sleep(0.25)
-        assert not new_inside.exists()
-        release_old.write_text("go", encoding="utf-8")
-        old_stdout, old_stderr = old.communicate(timeout=30.0)
-        new_stdout, new_stderr = new.communicate(timeout=30.0)
-        assert old.returncode == 0, old_stdout + old_stderr
-        assert new.returncode == 0, new_stdout + new_stderr
-    finally:
-        release_old.touch()
-        for process in (old, new):
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait(timeout=5.0)
+        new: subprocess.Popen[str] | None = None
+        try:
+            new = subprocess.Popen(
+                [
+                    sys.executable, "-c", script, str(config_path), str(alias),
+                    new_id, "new", str(ready_new), *common,
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                env=environment,
+                stdout=new_stdout,
+                stderr=new_stderr,
+                text=True,
+            )
+            captures = (
+                ("old", old, old_stdout, old_stderr),
+                ("new", new, new_stdout, new_stderr),
+            )
+            _wait_for_process_marker(
+                ready_old,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _wait_for_process_marker(
+                ready_new,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            start.write_text("go", encoding="utf-8")
+            _wait_for_process_marker(
+                old_inside,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _wait_for_process_marker(
+                new_lock_attempt,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _assert_physical_alias_lock_contended(
+                alias / "SYNTHETIC" / ".suite.lock"
+            )
+            _assert_process_alive("old", old, old_stdout, old_stderr)
+            _assert_process_alive("new", new, new_stdout, new_stderr)
+            assert not new_lock_acquired.exists()
+            assert not new_inside.exists()
+            release_old.write_text("go", encoding="utf-8")
+            _wait_for_process_marker(
+                new_lock_acquired,
+                captures,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _wait_for_process_success(
+                "old",
+                old,
+                old_stdout,
+                old_stderr,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+            _wait_for_process_success(
+                "new",
+                new,
+                new_stdout,
+                new_stderr,
+                timeout_s=_PARENT_PROCESS_PHASE_TIMEOUT_S,
+            )
+        finally:
+            _release_and_reap_processes(
+                (start, release_old),
+                (old, new),
+            )
 
     experiment = root / "SYNTHETIC"
     latest = json.loads((experiment / "latest.json").read_text(encoding="utf-8"))
     assert latest["run_id"] == new_id
     assert verify_suite_directory(experiment / "runs" / old_id)
     assert verify_suite_directory(experiment / "runs" / new_id)
+
+
+def test_physical_alias_suite_lock_serializes_real_process_pointer_publication(
+    tmp_path: Path,
+) -> None:
+    _exercise_physical_alias_suite_lock(
+        tmp_path,
+        disable_experiment_lock=False,
+    )
+
+
+def test_physical_alias_suite_lock_oracle_rejects_noop_lock(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="suite lock.*physical alias.*not held",
+    ):
+        _exercise_physical_alias_suite_lock(
+            tmp_path,
+            disable_experiment_lock=True,
+        )
 
 
 def test_suite_b0_jsonl_preserves_exact_seed_order_and_schema(tmp_path: Path) -> None:
