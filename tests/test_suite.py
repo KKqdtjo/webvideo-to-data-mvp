@@ -341,6 +341,7 @@ def test_suite_writes_verified_enhanced_manifest_and_relative_latest_pointer(tmp
 
 
 @pytest.mark.parametrize("variant", ("B0", "B1"))
+@pytest.mark.requires_renderer
 def test_suite_preview_renderer_uses_verified_replay_after_swap_and_restore(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

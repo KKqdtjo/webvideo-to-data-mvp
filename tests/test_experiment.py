@@ -152,6 +152,7 @@ def _trusted_no_action_output(tmp_path: Path) -> tuple[Path, Path]:
     return config_path, output_dir
 
 
+@pytest.mark.requires_renderer
 def test_run_experiment_writes_auditable_orchestration_outputs(tmp_path: Path) -> None:
     """Catch a runner that skips a pipeline stage or omits its audit metrics."""
 
@@ -431,7 +432,9 @@ def test_action_gate_keeps_passing_manual_baseline_out_of_action_data() -> None:
     )
 
 
-@pytest.mark.parametrize("no_render", [True, False])
+@pytest.mark.parametrize(
+    "no_render", [True, pytest.param(False, marks=pytest.mark.requires_renderer)]
+)
 def test_b0_never_touches_source_in_render_or_no_render_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_render: bool
 ) -> None:
@@ -827,6 +830,7 @@ def test_mp4_validation_rejects_non_video_binary(tmp_path: Path) -> None:
         _validate_mp4(invalid)
 
 
+@pytest.mark.requires_renderer
 def test_invalid_rendered_mp4_publishes_failure_without_partial_media(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
